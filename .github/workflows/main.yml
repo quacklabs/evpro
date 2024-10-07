@@ -2,6 +2,8 @@ name: Build Windows Executable and Release
 
 on:
   push:
+    branches:
+      - 'main'
     tags:
       - 'v*'  # Trigger on version tags (e.g., v1.0.0)
 
