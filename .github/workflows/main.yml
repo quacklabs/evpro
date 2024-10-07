@@ -31,19 +31,6 @@ jobs:
 
     - name: Create Release
       id: create_release
-      uses: softprops/action-gh-release@v1
+      uses: ncipollo/release-action@v1.14.0
       with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
-        body: |
-          This release contains the Windows executable generated from the Python script.
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Upload the executable
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: ${{ github.ref }}
-        files: dist/validator.exe  # Adjust the filename
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        artifacts: "release.tar.gz,foo/*.exe"
