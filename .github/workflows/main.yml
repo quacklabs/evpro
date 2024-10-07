@@ -34,31 +34,31 @@ jobs:
 
     - name: Upload Artifact
     - uses: actions/upload-artifact@v2
-        with:
-          name: Windows_evpro
-          path: dist/validator.exe
+      with:
+        name: Windows_evpro
+        path: dist/validator.exe
 
 
     - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.event.head_commit.message }}
-          release_name: ${{ github.event.head_commit.message }}
-          overwrite: true
-          body: |
-            Test Release v1.0.0
-          draft: false
-          prerelease: false
-      - name: Upload Release Asset
-        id: upload-release-asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{steps.create_release.outputs.upload_url}}
-          asset_path: dist/validator.exe
-          asset_name: Evprox86_64.exe
-          asset_content_type: application/zip
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.event.head_commit.message }}
+        release_name: ${{ github.event.head_commit.message }}
+        overwrite: true
+        body: |
+          Test Release v1.0.0
+        draft: false
+        prerelease: false
+    - name: Upload Release Asset
+      id: upload-release-asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{steps.create_release.outputs.upload_url}}
+        asset_path: dist/validator.exe
+        asset_name: Evprox86_64.exe
+        asset_content_type: application/zip
