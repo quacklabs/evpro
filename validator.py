@@ -12,8 +12,10 @@ import requests
 import socks
 import smtplib
 import socket
-import datetime
+from datetime import datetime
 import pytz
+# from dateutil import tz
+import tzlocal as tzl;
 
 
 class Proxy:
@@ -39,28 +41,28 @@ class MX_Server:
 def check_system_time():
     try:
         # Get the system timezone
-        system_timezone = pytz.timezone(datetime.datetime.now().astimezone().tzinfo.zone)
-        # Replace 'https://worldtimeapi.org/api/timezone/America/Chicago' with your preferred time server URL
-        time_server_url = f"https://worldtimeapi.org/api/timezone/{system_timezone.zone}"
+        local_tz = str(tzl.get_localzone()).replace(" ", "_")
+        time_server_url = f"https://worldtimeapi.org/api/timezone/{local_tz}"
 
         response = requests.get(time_server_url)
         response.raise_for_status()
-        server_time = datetime.datetime.fromisoformat(response.json()['datetime'])
-        system_time = datetime.datetime.now()
+        server_time = datetime.fromisoformat(response.json()['utc_datetime'].replace("Z", "+00:00"))
+        system_time = datetime.now(pytz.utc)
 
-        time_difference = system_time - server_time
-        if time_difference.total_seconds() > 60 or time_difference.total_seconds() < -60:
+        
+
+        time_difference = abs((server_time - system_time).total_seconds())
+        if time_difference > 60 or time_difference < -60:
             show_error_dialog("Your system time is not in sync. Please update your date and time settings.")
             return False
 
         # Replace '2024-10-08' with your desired cutoff date
-        cutoff_date = datetime.datetime(2024, 10, 10)
+        # 
+        cutoff_date = datetime.fromisoformat("2024-10-10T10:42:52.168310+00:00")
         if system_time > cutoff_date:
             show_error_dialog("This product is expired, please purchase a live copy")
             return False
 
-        # Run your other function here
-        print("======Valid product license found========")
         return True
 
     except requests.exceptions.RequestException as e:
@@ -70,7 +72,7 @@ def check_system_time():
 def show_error_dialog(message):
     root = Tk()
     root.withdraw()
-    tk.messagebox.showerror("Error", message)
+    messagebox.showerror("Error", message)
     root.destroy()
 
 
