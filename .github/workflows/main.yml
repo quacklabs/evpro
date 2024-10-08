@@ -34,5 +34,5 @@ jobs:
         with:
           upload_url: ${{ github.event.repository.url }}/releases/download/${{ github.ref }}/validator.exe
           asset_path: dist\validator.exe
-          name: validator.exe
-          label: Portable Python Executable
+          asset_name: validator.exe
+          asset_content_type: Portable Python Executable
