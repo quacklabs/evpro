@@ -27,12 +27,8 @@ jobs:
       - name: Compile portable executable
         run: pyinstaller --onefile --noconsole --target-arch=x86_64 validator.py
 
-      - name: Create GitHub release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload EXE as Artifact
+        uses: actions/upload-artifact@v3
         with:
-          upload_url: ${{ github.event.repository.url }}/releases/download/${{ github.ref }}/validator.exe
-          asset_path: dist\validator.exe
-          asset_name: validator.exe
-          asset_content_type: Portable Python Executable
+          asset_name: portable-exe
+          asset_path: dist/validator.exe
