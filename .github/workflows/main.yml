@@ -21,8 +21,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Compile portable executable for x86
+        shell: pwsh
         run: |
-          font_dir=$(python -c "import os, pyfiglet; print(os.path.join(os.path.dirname(pyfiglet.__file__), 'fonts'))")
+          $font_dir = python -c "import os, pyfiglet; print(os.path.join(os.path.dirname(pyfiglet.__file__), 'fonts'))"
           pyinstaller --onefile --add-data "$font_dir;pyfiglet/fonts" --name email_toolkit_x86 run.py
 
       - name: Upload EXE as Artifact
@@ -52,8 +53,9 @@ jobs:
 
 
       - name: Compile portable executable for x64
+        shell: pwsh
         run: |
-          font_dir=$(python -c "import os, pyfiglet; print(os.path.join(os.path.dirname(pyfiglet.__file__), 'fonts'))")
+          $font_dir = python -c "import os, pyfiglet; print(os.path.join(os.path.dirname(pyfiglet.__file__), 'fonts'))"
           pyinstaller --onefile --add-data "$font_dir;pyfiglet/fonts" --name email_toolkit_x64 run.py
 
       - name: Upload EXE as Artifact
