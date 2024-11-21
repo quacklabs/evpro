@@ -1,11 +1,37 @@
-name: Build and Release Portable Python Executable
+name: Build Portable Windows Executable
 
 on:
   push:
     branches: [main]
 
 jobs:
-  build:
+  build-32bit:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.12
+          architecture: 'x86'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile portable executable for x86
+        run: |
+          font_dir=$(python -c "import os, pyfiglet; print(os.path.join(os.path.dirname(pyfiglet.__file__), 'fonts'))")
+          pyinstaller --onefile --add-data "$font_dir;pyfiglet/fonts" --name email_toolkit_x86 run.py
+
+      - name: Upload EXE as Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: email_toolkit_x86
+          path: dist/email_toolkit_x86.exe
+  
+  build-64bit:
     runs-on: windows-latest
 
     steps:
@@ -24,11 +50,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Compile portable executable
-        run: pyinstaller --onefile --noconsole --target-arch=x86_64 validator.py
+
+      - name: Compile portable executable for x64
+        run: |
+          font_dir=$(python -c "import os, pyfiglet; print(os.path.join(os.path.dirname(pyfiglet.__file__), 'fonts'))")
+          pyinstaller --onefile --add-data "$font_dir;pyfiglet/fonts" --name email_toolkit_x64 run.py
 
       - name: Upload EXE as Artifact
         uses: actions/upload-artifact@v3
         with:
-          name: portable-exe
-          path: dist/validator.exe
+          name: email_toolkit_x64
+          path: dist/email_toolkit_x64.exe

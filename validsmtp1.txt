@@ -1,0 +1,10 @@
+smtp.office365.com|587|tai173564@huce.edu.vn|JEfcXDsp1@#
+smtp.office365.com|587|15922416707@veigadealmeida.edu.br|UVA@16052005
+
+smtp.office365.com|587|marco.schoeninger@ms-gleinstaetten.at|cool1234
+smtp.office365.com|587|5066044@aluno.uniasselvi.com.br|M@13776574933
+smtp.office365.com|587|74135604@grupomariategui.edu.pe|Lionel0812
+smtp.office365.com|587|2008230713@alu.uap.edu.pe|Dni45494195@/
+smtp.office365.com|587|aeadeniji@bellsuniversity.onmicrosoft.com|Emmanuel333#
+
+1368047@senati.pe | AF131103l

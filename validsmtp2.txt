@@ -1,0 +1,2 @@
+smtp.office365.com|587|1368047@senati.pe|AF131103l
+smtp.office365.com|587|tai173564@huce.edu.vn|JEfcXDsp1@#
