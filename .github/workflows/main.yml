@@ -105,14 +105,20 @@ jobs:
         shell: pwsh
         run: |
           $font_dir = python -c "import os, pyfiglet; print(os.path.join(os.path.dirname(pyfiglet.__file__), 'fonts'))"
+          $vcRuntimeDir = "C:\Windows\System32"
 
           # Get all api-ms-win-crt-*.dll files from the System32 directory
-          $dlls = Get-ChildItem -Path "C:\Windows\System32\api-ms-win-crt-*.dll"
+          $dlls = Get-ChildItem -Path "$vcRuntimeDir" -Filter "api-ms-win-crt-*.dll" -Recurse
 
-          # Build the add-binary arguments for PyInstaller
+          if ($dlls.Count -eq 0) {
+              Write-Error "No required DLL files found in the directory."
+              exit 1
+          }
+
+          # Step 3: Build the add-binary arguments
           $addBinaryArgs = $dlls | ForEach-Object { "$($_.FullName);." }
 
-          # Join the binary arguments into one string with --add-binary as separator
+          # Step 4: Join all the add-binary arguments into a single string, separating with spaces
           $addBinaryArgsString = $addBinaryArgs -join " --add-binary "
 
           # Prepare the PyInstaller command with the font directory and binary arguments
