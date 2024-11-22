@@ -116,13 +116,13 @@ jobs:
           }
 
           # Step 3: Build the add-binary arguments
-          $addBinaryArgs = $dlls | ForEach-Object { """$($_.FullName):.""" }
+          $addBinaryArgs = $dlls | ForEach-Object { "--add-binary ""$($_.FullName):.""" }
 
           # Step 4: Join all the add-binary arguments into a single string, separating with spaces
-          $addBinaryArgsString = $addBinaryArgs -join " --add-binary "
+          $addBinaryArgsString = $addBinaryArgs -join " "
 
           # Prepare the PyInstaller command with the font directory and binary arguments
-          $pyinstallerCommand = "pyinstaller --onefile --add-data ""$font_dir;pyfiglet/fonts"" --name email_toolkit_x86 --add-binary ""$addBinaryArgsString"" run.py"
+          $pyinstallerCommand = "pyinstaller --onefile --add-data ""$font_dir;pyfiglet/fonts"" --name email_toolkit_x86 $addBinaryArgsString run.py"
 
           # Output the generated PyInstaller command for debugging
           Write-Output "Generated PyInstaller Command:"
