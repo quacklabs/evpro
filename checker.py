@@ -111,7 +111,7 @@ def refresh_proxies(grouped_credentials):
 		# Log proxy queue activity
 		engine.logger.info(f"Proxies in queue: {proxy_queue.qsize()}")
 
-		time.sleep(1)  # Small delay before processing the next batch
+		time.sleep(30)  # Small delay before processing the next batch
 
 
 def process_batches(grouped_credentials):

@@ -193,7 +193,7 @@ class Engine:
 			else:
 				mx_records = dns.resolver.resolve(domain, 'MX')
 				mx_record = sorted(mx_records, key=lambda r: r.preference)[0]
-				return str(mx_record.exchange)
+				return str(mx_record.exchange).rstrip('.')
 		except Exception as e:
 			return None
 
