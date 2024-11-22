@@ -64,7 +64,7 @@ jobs:
           }
 
           # Wait until registry keys are available or timeout after multiple attempts
-          $maxAttempts = 30
+          $maxAttempts = 5
           $attempts = 0
           while (-not (Test-Path $vcRegistryPath) -and $attempts -lt $maxAttempts) {
             Write-Output "Waiting for Visual C++ Redistributable to be fully installed..."
