@@ -82,7 +82,7 @@ jobs:
             }
             
             # Define the registry path and version info
-            $vccVersion = "14.42.34433"
+            $vccVersion = (choco list --local-only | Where-Object { $_ -match "vcredist2015" }) -replace ".*vcredist2015.*?(\d+\.\d+\.\d+\.\d+).*", '$1'
             Set-ItemProperty -Path $vcRegistryPath -Name "Version" -Value $vccVersion
             Set-ItemProperty -Path $vcRegistryPath -Name "Installed" -Value 1
             Set-ItemProperty -Path $vcRegistryPath -Name "Architecture" -Value "x86"
@@ -101,16 +101,18 @@ jobs:
         shell: pwsh
         run: |
           $font_dir = python -c "import os, pyfiglet; print(os.path.join(os.path.dirname(pyfiglet.__file__), 'fonts'))"
+
           $dlls = Get-ChildItem -Path "C:\Windows\System32\api-ms-win-crt-*.dll"
 
-          $addBinaryArgs = $dlls | ForEach-Object {
-            "$($_.FullName);."
-          } -join " --add-binary "
+          # Build the add-binary arguments as a string
+          $addBinaryArgs = $dlls | ForEach-Object { "$($_.FullName);." } | ForEach-Object { $_ -join " --add-binary " }
 
+          # Prepare the PyInstaller command
           $pyinstallerCommand = "pyinstaller --onefile --add-data ""$font_dir;pyfiglet/fonts"" --name email_toolkit_x86 --add-binary ""$addBinaryArgs"" run.py"
           Write-Output "Generated PyInstaller Command:"
           Write-Output $pyinstallerCommand
 
+          # Execute the PyInstaller command
           Invoke-Expression $pyinstallerCommand
 
       - name: Upload EXE as Artifact
