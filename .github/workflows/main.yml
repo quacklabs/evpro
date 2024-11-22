@@ -38,6 +38,12 @@ jobs:
           # Cleanup installer after installation
           Remove-Item -Force "vc_redist.x86.exe"
 
+      - name: Debug Environment
+        run: |
+          python --version
+          python -c "import platform; print(platform.architecture())"
+          dir "C:\Windows\System32\api-ms-win-crt-*.dll"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
