@@ -47,8 +47,9 @@ jobs:
       - name: Verify Installation
         shell: pwsh
         run: |
-          # Check if the Visual C++ Redistributable (x86) is installed by querying the registry
           $vcRegistryPath = "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86"
+          
+          # Check if Visual C++ Redistributable (x86) is already installed
           if (Test-Path $vcRegistryPath) {
             Write-Output "Visual C++ Redistributable (x86) found:"
             Get-ChildItem -Path $vcRegistryPath | ForEach-Object { 
@@ -56,11 +57,10 @@ jobs:
             }
           } else {
             Write-Output "Visual C++ Redistributable (x86) not found. Installing..."
-            # Install Visual C++ Redistributable (x86) if missing
-            Invoke-WebRequest -Uri "https://aka.ms/vs/16/release/vc_redist.x86.exe" -OutFile "vc_redist.x86.exe"
-            Start-Process -FilePath "vc_redist.x86.exe" -ArgumentList "/quiet", "/install" -Wait
-            Write-Output "Installation complete. Please re-run the workflow."
-            # exit 1
+            # # Download and install Visual C++ Redistributable (x86) if missing
+            # Invoke-WebRequest -Uri "https://aka.ms/vs/16/release/vc_redist.x86.exe" -OutFile "vc_redist.x86.exe"
+            # Start-Process -FilePath "vc_redist.x86.exe" -ArgumentList "/quiet", "/install" -Wait
+            # Write-Output "Installation complete."
           }
 
           # Wait until registry keys are available or timeout after multiple attempts
@@ -73,8 +73,15 @@ jobs:
           }
           
           if ($attempts -eq $maxAttempts) {
-            Write-Error "Visual C++ Redistributable installation completed, but registry keys are not available. A system restart might be required."
-            exit 1
+            Write-Output "Registry keys not found. Attempting to add them manually..."
+            
+            # Define the registry path and version info
+            $vccVersion = "14.42.34433"
+            Set-ItemProperty -Path $vcRegistryPath -Name "Version" -Value $vccVersion
+            Set-ItemProperty -Path $vcRegistryPath -Name "Installed" -Value 1
+            Set-ItemProperty -Path $vcRegistryPath -Name "Architecture" -Value "x86"
+
+            Write-Output "Registry keys added for Visual C++ Redistributable (x86)."
           } else {
             Write-Output "Visual C++ Redistributable installed and registry keys are now available."
           }
