@@ -47,9 +47,20 @@ jobs:
       - name: Verify Installation
         shell: pwsh
         run: |
-          # Confirm presence of key runtime DLLs
-          if (-not (Test-Path "C:\Windows\System32\msvcp140.dll")) {
-              throw "VC++ Redistributable installation failed: 'msvcp140.dll' not found."
+          # Check if the Visual C++ Redistributable (x86) is installed by querying the registry
+          $vcRegistryPath = "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86"
+          if (Test-Path $vcRegistryPath) {
+            Write-Output "Visual C++ Redistributable (x86) found:"
+            Get-ChildItem -Path $vcRegistryPath | ForEach-Object { 
+                Write-Output "$($_.Name): $($_.GetValue('Version'))" 
+            }
+          } else {
+            Write-Output "Visual C++ Redistributable (x86) not found. Installing..."
+            # Install Visual C++ Redistributable (x86) if missing
+            Invoke-WebRequest -Uri "https://aka.ms/vs/16/release/vc_redist.x86.exe" -OutFile "vc_redist.x86.exe"
+            Start-Process -FilePath "vc_redist.x86.exe" -ArgumentList "/quiet", "/install" -Wait
+            Write-Output "Installation complete. Please re-run the workflow."
+            exit 1
           }
 
       - name: Verify Installed Visual C++ Redistributable Version
