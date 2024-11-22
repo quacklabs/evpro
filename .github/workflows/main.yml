@@ -52,15 +52,11 @@ jobs:
               throw "VC++ Redistributable installation failed: 'msvcp140.dll' not found."
           }
 
-      - name: Verify DLL Files
+      - name: Verify Installed Visual C++ Redistributable Version
         shell: pwsh
         run: |
-          Get-ChildItem -Path "C:\Windows\System32" -Filter "api-ms-win-crt-*.dll"
-
-      - name: Install Visual C++ Redistributable
-        shell: pwsh
-        run: |
-          choco install vcredist140 -y
+          Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86" |
+            ForEach-Object { Write-Output "$($_.Name): $($_.GetValue('Version'))" }
 
       - name: Install dependencies
         run: |
@@ -71,7 +67,17 @@ jobs:
         shell: pwsh
         run: |
           $font_dir = python -c "import os, pyfiglet; print(os.path.join(os.path.dirname(pyfiglet.__file__), 'fonts'))"
-          pyinstaller --onefile --add-data "$font_dir;pyfiglet/fonts" --add-binary "C:\Windows\System32\api-ms-win-crt-runtime-l1-1-0.dll;." --add-binary "C:\Windows\System32\api-ms-win-crt-stdio-l1-1-0.dll;." --name email_toolkit_x86 run.py
+          $dlls = Get-ChildItem -Path "C:\Windows\System32\api-ms-win-crt-*.dll"
+
+          $addBinaryArgs = $dlls | ForEach-Object {
+            "$($_.FullName);."
+          } -join " --add-binary "
+
+          $pyinstallerCommand = "pyinstaller --onefile --add-data ""$font_dir;pyfiglet/fonts"" --name email_toolkit_x86 --add-binary ""$addBinaryArgs"" run.py"
+          Write-Output "Generated PyInstaller Command:"
+          Write-Output $pyinstallerCommand
+
+          Invoke-Expression $pyinstallerCommand
 
       - name: Upload EXE as Artifact
         uses: actions/upload-artifact@v3
