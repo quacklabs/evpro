@@ -120,7 +120,11 @@ jobs:
 
           # Step 3: Build the add-binary arguments
           $addBinaryArgs = $dlls | ForEach-Object { "--add-binary ""$($_.FullName):.""" }
-          $hiddenImports = $pythonFiles | ForEach-Object { "--hidden-import=$($_.BaseName)" }
+
+          # Construct hidden import arguments
+          $hiddenImports = $pythonFiles | ForEach-Object { 
+              "--hidden-import=`"$($_.BaseName)`"" 
+          }
           
           # Step 4: Join all the add-binary arguments into a single string, separating with spaces
           $addBinaryArgsString = $addBinaryArgs -join " "
