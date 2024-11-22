@@ -116,7 +116,7 @@ jobs:
           }
 
           # Step 3: Build the add-binary arguments
-          $addBinaryArgs = $dlls | ForEach-Object { "$($_.FullName);." }
+          $addBinaryArgs = $dlls | ForEach-Object { "$($_.FullName):." }
 
           # Step 4: Join all the add-binary arguments into a single string, separating with spaces
           $addBinaryArgsString = $addBinaryArgs -join " --add-binary "
