@@ -106,13 +106,19 @@ jobs:
         run: |
           $font_dir = python -c "import os, pyfiglet; print(os.path.join(os.path.dirname(pyfiglet.__file__), 'fonts'))"
 
+          # Get all api-ms-win-crt-*.dll files from the System32 directory
           $dlls = Get-ChildItem -Path "C:\Windows\System32\api-ms-win-crt-*.dll"
 
-          # Build the add-binary arguments as a string
-          $addBinaryArgs = $dlls | ForEach-Object { "$($_.FullName);." } | ForEach-Object { $_ -join " --add-binary " }
+          # Build the add-binary arguments for PyInstaller
+          $addBinaryArgs = $dlls | ForEach-Object { "$($_.FullName);." }
 
-          # Prepare the PyInstaller command
-          $pyinstallerCommand = "pyinstaller --onefile --add-data ""$font_dir;pyfiglet/fonts"" --name email_toolkit_x86 --add-binary ""$addBinaryArgs"" run.py"
+          # Join the binary arguments into one string with --add-binary as separator
+          $addBinaryArgsString = $addBinaryArgs -join " --add-binary "
+
+          # Prepare the PyInstaller command with the font directory and binary arguments
+          $pyinstallerCommand = "pyinstaller --onefile --add-data ""$font_dir;pyfiglet/fonts"" --name email_toolkit_x86 --add-binary ""$addBinaryArgsString"" run.py"
+
+          # Output the generated PyInstaller command for debugging
           Write-Output "Generated PyInstaller Command:"
           Write-Output $pyinstallerCommand
 
