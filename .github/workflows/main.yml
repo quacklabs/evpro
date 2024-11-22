@@ -108,7 +108,7 @@ jobs:
           $vcRuntimeDir = "C:\Windows\System32"
 
           # Get all api-ms-win-crt-*.dll files from the System32 directory
-          $dlls = Get-ChildItem -Path "$vcRuntimeDir" -Filter "api-ms-win-crt-*.dll" -Recurse
+          $dlls = $dlls = Get-ChildItem -Path "$vcRuntimeDir" -Filter "api-ms-win-crt-*.dll" -Recurse -ErrorAction SilentlyContinue
 
           if ($dlls.Count -eq 0) {
               Write-Error "No required DLL files found in the directory."
