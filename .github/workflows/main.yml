@@ -53,7 +53,7 @@ jobs:
         shell: pwsh
         run: |
           $font_dir = python -c "import os, pyfiglet; print(os.path.join(os.path.dirname(pyfiglet.__file__), 'fonts'))"
-          pyinstaller --onefile --add-data "$font_dir;pyfiglet/fonts" --add-binary "C:\\hostedtoolcache\\windows\\Python\\3.12.7\\x86\\DLLs\\api-ms-win-crt-*;." --name email_toolkit_x86 run.py
+          pyinstaller --onefile --add-data "$font_dir;pyfiglet/fonts" --add-binary ""C:\\Windows\\System32\\api-ms-win-crt-*.dll;."" --name email_toolkit_x86 run.py
 
       - name: Upload EXE as Artifact
         uses: actions/upload-artifact@v3
