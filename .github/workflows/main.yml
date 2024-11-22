@@ -83,12 +83,7 @@ jobs:
             
             # Define the registry path and version info
             # Extract version from choco list or any other source
-            $vccVersion = (choco list --local-only | Where-Object { $_ -match "vcredist2015" }) -replace ".*vcredist2015.*?(\d+\.\d+\.\d+\.\d+).*", '$1'
-
-            # Ensure it's a string
-            if ($vccVersion -is [Array]) {
-                $vccVersion = $vccVersion[0]
-            }
+            $vccVersion = (Get-Item "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Redist\MSVC\*\").Name
 
             Set-ItemProperty -Path $vcRegistryPath -Name "Version" -Value $vccVersion
             Set-ItemProperty -Path $vcRegistryPath -Name "Installed" -Value 1
