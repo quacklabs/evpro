@@ -64,7 +64,7 @@ jobs:
           }
 
           # Wait until registry keys are available or timeout after multiple attempts
-          $maxAttempts = 5
+          $maxAttempts = 3
           $attempts = 0
           while (-not (Test-Path $vcRegistryPath) -and $attempts -lt $maxAttempts) {
             Write-Output "Waiting for Visual C++ Redistributable to be fully installed..."
@@ -74,6 +74,12 @@ jobs:
           
           if ($attempts -eq $maxAttempts) {
             Write-Output "Registry keys not found. Attempting to add them manually..."
+
+            # Create registry path if it does not exist
+            if (-not (Test-Path $vcRegistryPath)) {
+                Write-Output "Creating registry path: $vcRegistryPath"
+                New-Item -Path $vcRegistryPath -Force
+            }
             
             # Define the registry path and version info
             $vccVersion = "14.42.34433"
