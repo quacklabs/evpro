@@ -48,7 +48,11 @@ jobs:
         shell: pwsh
         run: |
           $vcRegistryPath = "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86"
-          
+          $vcInstallPath = "C:\Windows\System32"
+
+          $vcFile = Get-ChildItem -Path $vcInstallPath -Filter "msvcr*.dll" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $vccVersion = (Get-ItemProperty -Path $vcFile.FullName).VersionInfo.FileVersion
+
           # Check if Visual C++ Redistributable (x86) is already installed
           if (Test-Path $vcRegistryPath) {
             Write-Output "Visual C++ Redistributable (x86) found:"
@@ -83,8 +87,6 @@ jobs:
             
             # Define the registry path and version info
             # Extract version from choco list or any other source
-            $vccVersion = (Get-Item "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Redist\MSVC\*\").Name
-
             Set-ItemProperty -Path $vcRegistryPath -Name "Version" -Value $vccVersion
             Set-ItemProperty -Path $vcRegistryPath -Name "Installed" -Value 1
             Set-ItemProperty -Path $vcRegistryPath -Name "Architecture" -Value "x86"
