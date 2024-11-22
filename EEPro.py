@@ -53,33 +53,18 @@ class Engine:
 				yield line.strip()
 
 	def fetch_proxy(self):
-
-		match self.last_proxy:
-			case 'proxyscrape':
-				api_url = "https://spys.me/socks.txt"
-				self.last_proxy = 'spys'
-				response = requests.get(api_url)
-			case 'spys' | None:
-				api_url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&country=us&protocol=http,socks4&proxy_format=ipport&format=json&timeout=10000"
-				self.last_proxy = 'proxyscrape'
-				headers = {
-					"Content-type" : "application/json",
-					"Accept" : "application/json"
-				}
-				response = requests.get(api_url, headers)
+		
 		try:
+			headers = {
+				"Content-type" : "application/json",
+				"Accept" : "application/json"
+			}
+			api_url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&country=us&protocol=http,socks4&proxy_format=ipport&format=json&timeout=10000"
+			response = requests.get(api_url, headers)
 			response.raise_for_status()
-			
-			if self.last_proxy == 'proxyscrape':
-				proxies = response.json()['proxies']
-				return [Proxy(proxy['ip'], proxy['port'], proxy['protocol']) for proxy in proxies]
-
-			else:
-				proxy_pattern = r"(\d+\.\d+\.\d+\.\d+):(\d+)"
-				matches = re.findall(proxy_pattern, response.text)
-				proxies = [Proxy(match[0], int(match[1]), 'socks5') for match in matches]
-
-				return proxies
+			proxies = response.json()['proxies']
+				
+			return [Proxy(proxy['ip'], proxy['port'], proxy['protocol']) for proxy in proxies]
 		except Exception as e:
 			print(f"Failed to get proxies: {e}")
 			return None
