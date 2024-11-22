@@ -60,7 +60,7 @@ jobs:
             Invoke-WebRequest -Uri "https://aka.ms/vs/16/release/vc_redist.x86.exe" -OutFile "vc_redist.x86.exe"
             Start-Process -FilePath "vc_redist.x86.exe" -ArgumentList "/quiet", "/install" -Wait
             Write-Output "Installation complete. Please re-run the workflow."
-            exit 1
+            # exit 1
           }
 
       - name: Verify Installed Visual C++ Redistributable Version
