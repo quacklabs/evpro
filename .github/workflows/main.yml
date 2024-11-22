@@ -63,11 +63,21 @@ jobs:
             # exit 1
           }
 
-      - name: Verify Installed Visual C++ Redistributable Version
-        shell: pwsh
-        run: |
-          Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x86" |
-            ForEach-Object { Write-Output "$($_.Name): $($_.GetValue('Version'))" }
+          # Wait until registry keys are available or timeout after multiple attempts
+          $maxAttempts = 30
+          $attempts = 0
+          while (-not (Test-Path $vcRegistryPath) -and $attempts -lt $maxAttempts) {
+            Write-Output "Waiting for Visual C++ Redistributable to be fully installed..."
+            Start-Sleep -Seconds 10
+            $attempts++
+          }
+          
+          if ($attempts -eq $maxAttempts) {
+            Write-Error "Visual C++ Redistributable installation completed, but registry keys are not available. A system restart might be required."
+            exit 1
+          } else {
+            Write-Output "Visual C++ Redistributable installed and registry keys are now available."
+          }
 
       - name: Install dependencies
         run: |
