@@ -108,7 +108,7 @@ jobs:
           $vcRuntimeDir = "C:\Windows\System32"
 
           # Get all api-ms-win-crt-*.dll files from the System32 directory
-          $dlls = $dlls = Get-ChildItem -Path "$vcRuntimeDir" -Filter "api-ms-win-crt-*.dll" -Recurse -ErrorAction SilentlyContinue
+          $dlls = Get-ChildItem -Path "$vcRuntimeDir" -Filter "api-ms-win-crt-*.dll" -Recurse -ErrorAction SilentlyContinue
 
           if ($dlls.Count -eq 0) {
               Write-Error "No required DLL files found in the directory."
@@ -116,7 +116,7 @@ jobs:
           }
 
           # Step 3: Build the add-binary arguments
-          $addBinaryArgs = $dlls | ForEach-Object { "$($_.FullName):." }
+          $addBinaryArgs = $dlls | ForEach-Object { """$($_.FullName):.""" }
 
           # Step 4: Join all the add-binary arguments into a single string, separating with spaces
           $addBinaryArgsString = $addBinaryArgs -join " --add-binary "
