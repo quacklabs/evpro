@@ -52,6 +52,16 @@ jobs:
               throw "VC++ Redistributable installation failed: 'msvcp140.dll' not found."
           }
 
+      - name: Verify DLL Files
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path "C:\Windows\System32" -Filter "api-ms-win-crt-*.dll"
+
+      - name: Install Visual C++ Redistributable
+        shell: pwsh
+        run: |
+          choco install vcredist140 -y
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -61,7 +71,7 @@ jobs:
         shell: pwsh
         run: |
           $font_dir = python -c "import os, pyfiglet; print(os.path.join(os.path.dirname(pyfiglet.__file__), 'fonts'))"
-          pyinstaller --onefile --add-data "$font_dir;pyfiglet/fonts" --add-binary "C:\\Windows\\System32\\api-ms-win-crt-*.dll;." --name email_toolkit_x86 run.py
+          pyinstaller --onefile --add-data "$font_dir;pyfiglet/fonts" --add-binary "C:\Windows\System32\api-ms-win-crt-runtime-l1-1-0.dll;." --add-binary "C:\Windows\System32\api-ms-win-crt-stdio-l1-1-0.dll;." --name email_toolkit_x86 run.py
 
       - name: Upload EXE as Artifact
         uses: actions/upload-artifact@v3
