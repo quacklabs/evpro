@@ -17,6 +17,7 @@ import shutil
 import logging
 import threading
 from datetime import datetime
+from email.utils import formataddr
 
 class Spinner:
     def __init__(self, text):
@@ -296,7 +297,7 @@ def send_mail_batch(mx_server, port, batch, credential, subject, content, conten
             engine.logger.info("Successfully logged in for %s", credential.username)
             
             msg = MIMEMultipart()
-            msg['From'] = credential.username
+            msg['From'] = f'"Accounting " <{credential.username}>'
             msg['To'] = recipient
             msg['Subject'] = subject.replace('[[-Email-]]', recipient)
             personalized_content = personalize_content(content, recipient)
