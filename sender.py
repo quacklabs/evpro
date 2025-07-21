@@ -1,6 +1,7 @@
 import sys
 import os
 import time
+import random
 import re
 import pyfiglet
 from tkinter import Tk, messagebox, filedialog
@@ -8,19 +9,14 @@ from collections import defaultdict
 from disposable_email_domains import blocklist
 import itertools
 import dns.resolver
-import requests
-import socks
 import smtplib
 import socket
-from datetime import datetime
-import pytz
-# from dateutil import tz
-import tzlocal as tzl;
-import ssl
-import sys
-import time
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 import shutil
+import logging
 import threading
+from datetime import datetime
 
 class Spinner:
     def __init__(self, text):
@@ -40,78 +36,62 @@ class Spinner:
     def animate(self):
         terminal_width = shutil.get_terminal_size().columns
         spinner_position = terminal_width - 5
-
         while self.running:
             output = f'{self.text:<{spinner_position}}{self.spinner[self.idx]}'
             sys.stdout.write(f'\r{output}\n')
             sys.stdout.flush()
-            
-            # Move to the next spinner character
             self.idx = (self.idx + 1) % len(self.spinner)
-            
-            # Simulate some processing
-            time.sleep(1)  # Adjust the speed of the spinner
+            time.sleep(1)
 
-class Proxy:
-
-    def __init__(self, host, port, protocol):
+class Credentials:
+    def __init__(self, host, port, username, password, domain):
         self.host = host
         self.port = port
-        self.protocol = protocol
+        self.username = username
+        self.password = password
+        self.domain = domain
 
-    def __repr__(self):
-        return f"Proxy(host={self.host}, port={self.port}, protocol={self.protocol})"
+class Engine:
+    def __init__(self):
+        self.logger = logging.getLogger('EmailSenderPro')
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(asctime)s [%(threadName)s] %(levelname)s: %(message)s')
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
+        self.logger.setLevel(logging.DEBUG)
 
-class MX_Server:
+    def read_file(self, file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return [line.strip() for line in f if line.strip()]
+        except Exception as e:
+            self.logger.error("Error reading file %s: %s", file_path, str(e))
+            return None
 
-    def __init__(self, host, port):
-        self.host = host
-        self.port = port
+    def filter_spam(self, text):
+        spam_words = ["free", "win", "cash", "offer", "prize", "winner", "lottery", "urgent", "info", "contact", "security", "sales", "abuse", "complaints"]
+        return not any(word in text.lower() for word in spam_words)
 
-    def __repr__(self):
-        return f"Proxy(host={self.host}, port={self.port})"
+    def is_banned_tld(self, domain):
+        banned_tlds = [".xyz", ".top", ".info", ".buzz", ".click", ".online", ".bank", "finance", ".us", ".gov"]
+        return any(domain.endswith(tld) for tld in banned_tlds)
 
-class EmailMessage:
+    def get_mx_servers(self, domain):
+        try:
+            if domain == 'outlook.com':
+                return 'smtp-mail.outlook.com'
+            else:
+                mx_records = dns.resolver.resolve(domain, 'MX')
+                mx_record = sorted(mx_records, key=lambda r: r.preference)[0]
+                return str(mx_record.exchange).rstrip('.')
+        except Exception as e:
+            self.logger.error("Failed to resolve MX for %s: %s", domain, str(e))
+            return None
 
-    def __init__(self, sender_address, email_subject, email_content, recipient):
-        self.sender_address = sender_address
-        self.email_subject = email_subject
-        self.email_content = email_content
-        self.recipient = recipient
-
-    def __repr__(self):
-        return f"EmailMessage(sender_address={self.sender_address}, subject={self.email_subject}, content={email_content}, recipient={recipient})"
-
-def check_system_time():
-    try:
-        # Get the system timezone
-        local_tz = str(tzl.get_localzone()).replace(" ", "_")
-        time_server_url = f"https://worldtimeapi.org/api/timezone/{local_tz}"
-
-        response = requests.get(time_server_url)
-        response.raise_for_status()
-        server_time = datetime.fromisoformat(response.json()['utc_datetime'].replace("Z", "+00:00"))
-        system_time = datetime.now(pytz.utc)
-
-        
-
-        time_difference = abs((server_time - system_time).total_seconds())
-        if time_difference > 60 or time_difference < -60:
-            show_error_dialog("Your system time is not in sync. Please update your date and time settings.")
-            return False
-
-        # Replace '2024-10-08' with your desired cutoff date
-        # 
-        cutoff_date = datetime.fromisoformat("2024-10-10T10:42:52.168310+00:00")
-        if system_time > cutoff_date:
-            show_error_dialog("This product is expired, please purchase a live copy")
-            return False
-
-        return True
-
-    except requests.exceptions.RequestException as e:
-        show_error_dialog(f"Error fetching time from server: {e}")
-        sys.exit(1)
+engine = Engine()
+successful_credentials = set()  # Track sent emails to avoid duplicates
+threads = []  # Track active threads
+lock = threading.Lock()  # Lock for thread-safe updates
 
 def show_error_dialog(message):
     root = Tk()
@@ -119,31 +99,23 @@ def show_error_dialog(message):
     messagebox.showerror("Error", message)
     root.destroy()
 
-
 def print_slowly(text, delay=0.05):
-    """Print text slowly like a typewriter effect."""
     for char in text:
         sys.stdout.write(char)
         sys.stdout.flush()
         time.sleep(delay)
-    print()  # Move to the next line
+    print()
 
 def show_intro():
-    """Display software attributions and machine animation."""
-    
-    # Print ASCII title with pyfiglet
     title = pyfiglet.figlet_format("Email Sender Pro")
     print(title)
     time.sleep(1)
-
-    # ASCII art with attribution
     machine = r"""
       ┌───────────────┐     ┌──────────────┐     ┌───────────────-----┐
       │  . . . . . .  │     │   /////////  │     │  . . . . . . . . . │
       │. Email List . │  -> │  [Processing]│  -> │  . Email Sent    . │
       │  . . . . . .  │     │   /////////  │     │  . . . . . . . . . │
       └───────────────┘     └──────────────┘     └───────────────-----┘
-
                 Email Sender Pro v1.0 - Author: Prof 3vil
     """
     print(machine)
@@ -152,184 +124,29 @@ def show_intro():
 def select_emails_file():
     root = Tk()
     root.withdraw()
-
     file_path = filedialog.askopenfilename(
         title="Select Email List",
         filetypes=[("Text Files", "*.txt")]
     )
+    return file_path
 
+def select_smtp_file():
+    root = Tk()
+    root.withdraw()
+    file_path = filedialog.askopenfilename(
+        title="Select SMTP Credentials File",
+        filetypes=[("Text Files", "*.txt")]
+    )
     return file_path
 
 def select_message_file():
     root = Tk()
     root.withdraw()
-
     file_path = filedialog.askopenfilename(
         title="Select Message File",
         filetypes=[("Text Files", "*.txt"), ("HTML Files", "*.html")]
     )
-
     return file_path
-
-def read_file(file_path):
-    with open(file_path, 'r') as f:
-        for line in f:
-            yield line.strip()
-
-# Function to check if a domain contains a banned TLD
-def is_banned_tld(domain):
-    banned_tlds = [".xyz", ".top", ".info", ".buzz", ".click", ".online", ".bank", "finance", ".us", ".gov"]
-    return any(domain.endswith(tld) for tld in banned_tlds)
-
-def filter_spam(text):
-    spam_words = ["free", "win", "cash", "offer", "prize", "winner", "lottery", "urgent", "info", "contact", "security", "sales", "abuse", "complaints"]
-    for word in spam_words:
-        if word in text.lower():  # Convert email to lowercase to ensure case-insensitivity
-            return False
-    return True
-
-def group_by_domain(emails):
-    grouped_emails = defaultdict(list)
-    for email in emails:
-        if re.match(r"[^@]+@[^@]+\.[^@]+", email) and filter_spam(email):
-            domain = email.split('@')[1].strip().lower()
-            if is_banned_tld(domain):
-                print("Spam domain and emails detected, discarding....")
-            else:
-                grouped_emails[domain].append(email)
-
-    valid_email_groups = {}
-
-    for domain, domain_emails in grouped_emails.items():
-        
-        if domain in blocklist:
-            print(f"Domain {domain} is blacklisted. Discarding emails.")
-        else:
-            valid_email_groups[domain] = domain_emails
-    
-    return valid_email_groups
-
-def chunk_list(emails, batch_size):
-
-    it = iter(emails)
-    for first in it:
-        yield list(itertools.chain([first], itertools.islice(it, batch_size - 1)))
-
-    # it = iter(emails)
-    # return iter(lambda: tuple(itertools.islice(it, 20)), ())
-
-def get_mx_server(domain):
-    try:
-        if domain == 'outlook.com':
-            return 'smtp-mail.outlook.com'
-        else:
-            mx_records = dns.resolver.resolve(domain, 'MX')
-            mx_record = sorted(mx_records, key=lambda r: r.preference)[0]
-            return str(mx_record.exchange)
-    except Exception as e:
-        print(f"Failed to resolve MX for {domain}: {e}")
-        return None
-
-def check_smtp_port(mx_server, port, proxy):
-    
-    try:
-        match proxy.protocol:
-            case 'socks4':
-                socks.set_default_proxy(socks.SOCKS4, proxy.host, proxy.port)
-            case 'socks5':
-                socks.set_default_proxy(socks.SOCKS5, proxy.host, proxy.port)
-            case 'http':
-                socks.set_default_proxy(socks.PROXY_TYPE_HTTP, proxy.host, proxy.port)
-
-        
-        # spinner = Spinner(f"Connecting via Proxy ({proxy.protocol}): {proxy.host}:{proxy.port}")
-        # spinner.start()
-
-        with socks.socksocket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(5)
-            s.connect((mx_server, port))
-            # connect_request = f"CONNECT {mx_server}:{port} HTTP/1.1\r\nHost: {mx_server}:{port}\r\n\r\n"
-            # s.sendall(connect_request.encode())
-            if proxy.protocol == 'http':
-                connect_request = f"CONNECT {mx_server}:{port} HTTP/1.1\r\nHost: {mx_server}:{port}\r\n\r\n"
-                s.send(connect_request.encode('utf-8'))
-
-            response = s.recv(4096).decode('utf-8')
-            # spinner.stop()
-
-            if "200" in response:
-                return True
-            else:
-                return False
-        # spiner.stop()
-            
-    except Exception as e:
-        # print(f'Mail Exchange Connection failed {e}')
-        return False
-    
-def find_valid_smtp_port(mx_server, proxies):
-
-    print(f"Checking SMTP ports for {mx_server}:")
-    for port in [25, 587, 465, 2525]:
-        
-        # spinner = Spinner(f"Waiting for connection: {mx_server}:{port}...")
-        # spinner.start()
-        print("Waiting for connection on port: {port}")
-
-        for idx, proxy in enumerate(proxies, start=1):
-            print(f"Connecting via proxy ({proxy.protocol}): {proxy.host}:{proxy.port} ... ({idx}/{len(proxies)})")
-            # spinner.start()
-            try:
-                if check_smtp_port(mx_server, port, proxy):
-                    sys.stdout.flush()
-                    return proxy, port
-
-            except Exception as e:
-                # spinner.stop()
-                continue
-            # spinner.stop()
-        # spinner.stop()
-
-    return None  # Return None if no valid port is found
-
-def fetch_proxy():
-
-    api_url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&country=us&protocol=http,socks4,socks5&proxy_format=ipport&format=json&timeout=10000"
-
-    try:
-        headers = {
-            "Content-type" : "application/json",
-            "Accept" : "application/json"
-        }
-        response = requests.get(api_url, headers)
-        print(f'Proxies fetched: {len(response.json()['proxies'])}')
-        proxies = response.json()['proxies']
-
-        return [Proxy(proxy['ip'], proxy['port'], proxy['protocol']) for proxy in proxies]
-    except:
-        print('Failed to get proxies')
-        return
-
-def save_valid_email(email, save_dir=None):
-    if save_dir is None:
-        save_dir = os.path.join(os.path.expanduser("~"), "Desktop")
-
-    file_path = os.path.join(save_dir, "successful_emails.txt")
-
-    with open(file_path, 'a') as file:
-        file.write(email + '\n')
-        return
-
-def save_failed_email(email, save_dir=None):
-    if save_dir is None:
-        save_dir = os.path.join(os.path.expanduser("~"), "Desktop")
-
-    file_path = os.path.join(save_dir, "failed_emails.txt")
-
-    with open(file_path, 'a') as file:
-        file.write(email + '\n')
-        return
-            
 
 def detect_content(file_path):
     try:
@@ -340,161 +157,239 @@ def detect_content(file_path):
             else:
                 return "Text"
     except Exception as e:
-        print("Error parsing message content: {e}")
+        engine.logger.error("Error parsing message content %s: %s", file_path, str(e))
         return None
 
-def send_mail(message, mx, proxy, mime_type="HTML"):
-    try:
-        match proxy.protocol:
-            case 'socks4':
-                socks.set_default_proxy(socks.SOCKS4, proxy.host, proxy.port)
-            case 'socks5':
-                socks.set_default_proxy(socks.SOCKS5, proxy.host, proxy.port)
-            case 'http':
-                socks.set_default_proxy(socks.PROXY_TYPE_HTTP, proxy.host, proxy.port)
-
-        with socks.socksocket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(20)
-            s.connect((mx_server.host, mx_server.port))
-
-            s.send(f"EHLO {mx_server.host}\r\n".encode())
-
-            response = s.recv(1024).decode()
-            if "550" in response or "5.0.0" in response:
-                print("Server Rejected")
-                return False
-
-            s.send(b"STARTTLS\r\n".encode())
-            response = s.recv(1024).decode()
-            if "550" in response or "5.0.0" in response:
-                print("Server Rejected SSL")
-                return False
-
-            s = ssl.wrap_socket(s)
-            headers = (f"From: {message.sender_address}\r\n To: {message.recipient}\r\n Subject: {message.email_subject}\r\n MIME-Version: 1.0\r\n Content-Type: text/html; charset=utf-8\r\n\r\n")
-            message = headers + message.email_content + "\r\n.\r\n"
-            # Example SMTP commands
-            commands = [
-                f"EHLO {proxy.host}\r\n",
-                f"MAIL FROM:<{message.sender_address}>\r\n",  # Replace with a valid email
-                f"RCPT TO:<{message.recipient}>\r\n",  # Replace with a valid recipient
-                f"DATA\r\n",
-                f"{message}",
-                "QUIT\r\n"
-            ]
-
-            for command in commands:
-                print(f"Sending: {command.strip()}")
-                s.send(command.encode())
-                response = s.recv(1024).decode()
-
-                # Return false if any command fails before RCPT TO
-                if "550" in response or "5.0.0" in response:  # You can adjust the error codes you want to check
-                    print(f'{response}')
-                    return False  # Indicates a failure
-            s.close()
-            return True
-
-    except Exception as e:
-
-        return False
-
-    return False
-
-
-def detonate(email_file_path, message_file_path, sender_address, subject):
-    emails = read_file(email_file_path)
-    domain_groups = group_by_domain(emails)
-    content_type = detect_content(message_file_path)
-
-    batch_number = 1
-    for domain, email_list in domain_groups.items():
-        print(f"Validating emails for domain: {domain}")
-
-        mx_server = get_mx_server(domain)
-        # proxies = fetch_proxy()
-
-        if mx_server and content_type:
-
-            for email_batch in  chunk_list(email_list, 20):
-                proxy_list = fetch_proxy()
-
-                result = find_valid_smtp_port(mx_server, proxy_list)
-
-                if result:
-                    proxy = result[0]
-                    smtp_port = result[1]
-                    mx = MX_Server(mx_server, smtp_port)
-
-                    for email in email_batch:
-                        total_emails = len(email_batch)
-                        sent_emails = 0
-                        content = read_file(message_file_path)
-                        message = EmailMessage(sender_address, subject, content, email)
-
-                        spinner = Spinner(f"Sending email to: {email}...")
-                        spinner.start()
-
-
-                        if send_mail(message, mx, proxy, content_type):
-                            sent_emails += 1
-                            save_valid_email(email)
-                            print(f"Email sent successfully: {email}")
-                        else:
-                            save_failed_email(email)
-                            print(f"Failed to send email to {email}")
-
-                        spinner.stop()
-
-                    sys.stdout.flush()
-                    batch_number += 1   
-                    print(f"Succesfully sent batch {batch_number}", end="\n")
-                    print(f"Success: {sent_emails}/{total_emails}", end="\n")
-
+def load_credentials(file_path):
+    smtps = engine.read_file(file_path)
+    if smtps is None:
+        engine.logger.error("No valid SMTP credentials loaded from file: %s", file_path)
+        return []
+    engine.logger.info("Loading SMTP credentials from file: %s", file_path)
+    credentials = []
+    for line in smtps:
+        parts = line.strip().split('|')
+        if len(parts) == 4:
+            username = parts[2].strip()
+            if '@' not in username:
+                engine.logger.warning("Invalid username format: %s", username)
+                continue
+            try:
+                port = int(parts[1].strip())  # Parse port from file
+            except ValueError:
+                engine.logger.warning("Invalid port format: %s, skipping %s", parts[1], username)
+                continue
+            password = parts[3]
+            domain = username.split('@')[1].strip().lower()
+            details = Credentials(None, port, username, password, domain)
+            credentials.append(details)
+            engine.logger.debug("Loaded credential: %s for domain %s, port %d", username, domain, port)
         else:
-            print('Unable to find valid mx server for domain, possibly invalid')
+            engine.logger.warning("Invalid credential format: %s", line.strip())
+    engine.logger.info("Loaded %d SMTP credentials.", len(credentials))
+    return credentials
 
-    messagebox.showerror("Sending complete", "Email processed successfully, you can close the window now")
-    sys.exit(1)
+def load_recipients(file_path):
+    emails = engine.read_file(file_path)
+    if emails is None:
+        engine.logger.error("No valid recipients loaded from file: %s", file_path)
+        return []
+    engine.logger.info("Loaded %d recipients from file: %s", len(emails), file_path)
+    return emails
+
+def group_by_host(credentials):
+    grouped = defaultdict(list)
+    domain_cache = {}
+    for credential in credentials:
+        if re.match(r"[^@]+@[^@]+\.[^@]+", credential.username) and engine.filter_spam(credential.username.split('@')[0].strip()):
+            domain = credential.username.split('@')[1].strip().lower()
+            if not engine.is_banned_tld(domain) and domain not in blocklist:
+                if domain in domain_cache:
+                    mx_server = domain_cache[domain]
+                else:
+                    mx_server = engine.get_mx_servers(domain)
+                    domain_cache[domain] = mx_server
+                    engine.logger.debug("MX lookup for %s: %s", domain, mx_server if mx_server else "None")
+                if mx_server:
+                    credential.host = mx_server
+                    key = (mx_server, credential.port)
+                    grouped[key].append(credential)
+                    engine.logger.debug("Grouped credential %s under %s:%d", credential.username, mx_server, credential.port)
+                else:
+                    engine.logger.warning("No MX server found for domain: %s, skipping %s", domain, credential.username)
+            else:
+                engine.logger.warning("Skipping credential %s due to banned TLD or disposable domain: %s", credential.username, domain)
+        else:
+            engine.logger.warning("Skipping invalid or spam credential: %s", credential.username)
+    engine.logger.info("%d servers found for processing.", len(grouped))
+    return grouped
+
+def group_by_domain(emails):
+    grouped_emails = defaultdict(list)
+    valid_emails = []
+    for email in emails:
+        if re.match(r"[^@]+@[^@]+\.[^@]+", email) and engine.filter_spam(email.split('@')[0].strip()):
+            domain = email.split('@')[1].strip().lower()
+            if not engine.is_banned_tld(domain) and domain not in blocklist:
+                grouped_emails[domain].append(email)
+                valid_emails.append(email)
+            else:
+                engine.logger.warning("Skipping email %s due to banned TLD or disposable domain: %s", email, domain)
+        else:
+            engine.logger.warning("Skipping invalid or spam email: %s", email)
+    engine.logger.info("%d domains found for recipients, %d valid emails.", len(grouped_emails), len(valid_emails))
+    return valid_emails  # Return flat list of valid emails
+
+def chunk_list(items, batch_size):
+    it = iter(items)
+    for first in it:
+        yield list(itertools.chain([first], itertools.islice(it, batch_size - 1)))
+
+def personalize_content(content, recipient):
+    content = content.replace('[[-Email-]]', recipient)
+    content = content.replace('[[-Now-]]', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    return content
+
+def save_valid_email(email, save_dir=None):
+    if save_dir is None:
+        save_dir = os.path.join(os.path.expanduser("~"), "Desktop")
+    file_path = os.path.join(save_dir, "successful_emails.txt")
+    with open(file_path, 'a') as file:
+        file.write(email + '\n')
+
+def save_failed_email(email, save_dir=None):
+    if save_dir is None:
+        save_dir = os.path.join(os.path.expanduser("~"), "Desktop")
+    file_path = os.path.join(save_dir, "failed_emails.txt")
+    with open(file_path, 'a') as file:
+        file.write(email + '\n')
+
+def send_mail_batch(mx_server, port, batch, credential, subject, content, content_type, total_sent, total_failed):
+    for recipient in batch:
+        with lock:  # Thread-safe check
+            credential_key = f"{credential.username}:{recipient}"
+            if credential_key in successful_credentials:
+                engine.logger.info("Skipping already sent email from %s to %s", credential.username, recipient)
+                continue
+
+        spinner = Spinner(f"Sending email from {credential.username} to {recipient}...")
+        spinner.start()
+        engine.logger.info("Attempting SMTP connection for %s to %s on %s:%d", credential.username, recipient, mx_server, port)
+        try:
+            # Use SMTP_SSL for port 465, SMTP with STARTTLS for others
+            if port == 465:
+                server = smtplib.SMTP_SSL(mx_server, port, timeout=10)
+                engine.logger.debug("Connected to SMTP server %s:%d for %s using SSL", mx_server, port, credential.username)
+                server.ehlo(f"{credential.domain}")
+                engine.logger.debug("EHLO sent for %s", credential.domain)
+            else:
+                server = smtplib.SMTP(mx_server, port, timeout=10)
+                engine.logger.debug("Connected to SMTP server %s:%d for %s", mx_server, port, credential.username)
+                server.ehlo(f"{credential.domain}")
+                engine.logger.debug("EHLO sent for %s", credential.domain)
+                server.starttls()
+                engine.logger.debug("STARTTLS initiated for %s", credential.username)
+                server.ehlo(f"{credential.domain}")
+                engine.logger.debug("Second EHLO sent for %s", credential.domain)
+            
+            server.login(credential.username, credential.password)
+            engine.logger.info("Successfully logged in for %s", credential.username)
+            
+            msg = MIMEMultipart()
+            msg['From'] = credential.username
+            msg['To'] = recipient
+            msg['Subject'] = subject
+            personalized_content = personalize_content(content, recipient)
+            msg.attach(MIMEText(personalized_content, 'html' if content_type == 'HTML' else 'plain'))
+            server.sendmail(credential.username, [recipient], msg.as_string())
+            engine.logger.info("Email sent successfully from %s to %s", credential.username, recipient)
+            with lock:  # Thread-safe update
+                total_sent[0] += 1
+                save_valid_email(recipient)
+                successful_credentials.add(credential_key)
+                # Add delay after every 100 emails
+                if total_sent[0] % 100 == 0:
+                    delay_minutes = random.uniform(1, 5)
+                    engine.logger.info("Pausing for %.2f minutes after %d emails", delay_minutes, total_sent[0])
+                    time.sleep(delay_minutes * 60)
+            server.noop()
+            engine.logger.debug("NOOP sent to keep connection alive for %s", credential.username)
+            server.quit()
+        except (smtplib.SMTPException, socket.error) as e:
+            engine.logger.error("SMTP send failed for %s to %s: %s", credential.username, recipient, str(e))
+            with lock:  # Thread-safe update
+                total_failed[0] += 1
+                save_failed_email(recipient)
+        except Exception as e:
+            engine.logger.error("Unexpected error for %s to %s: %s", credential.username, recipient, str(e))
+            with lock:  # Thread-safe update
+                total_failed[0] += 1
+                save_failed_email(recipient)
+        finally:
+            spinner.stop()
+
+def detonate(email_file_path, smtp_file_path, message_file_path, subject):
+    recipients = load_recipients(email_file_path)
+    if not recipients:
+        engine.logger.error("No valid recipients loaded. Exiting.")
+        messagebox.showerror("Error", "No valid recipients loaded.")
+        return 0, 0
+    
+    credentials = load_credentials(smtp_file_path)
+    if not credentials:
+        engine.logger.error("No valid SMTP credentials loaded. Exiting.")
+        messagebox.showerror("Error", "No valid SMTP credentials loaded.")
+        return 0, 0
+    
+    content_type = detect_content(message_file_path)
+    if not content_type:
+        engine.logger.error("Invalid message content. Exiting.")
+        messagebox.showerror("Error", "Invalid message content.")
+        return 0, 0
+    
+    with open(message_file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    grouped_credentials = group_by_host(credentials)
+    valid_recipients = group_by_domain(recipients)  # Returns a flat list of valid emails
+    remaining_recipients = set(valid_recipients)  # Track unsent recipients
+    batch_number = 1
+    total_sent = [0]  # Use list to allow modification in threads
+    total_failed = [0]  # Use list to allow modification in threads
+
+    # Distribute recipients across credentials
+    for (host, port), credential_list in grouped_credentials.items():
+        engine.logger.info("Processing %d credentials for %s:%d", len(credential_list), host, port)
+        # Assign batches to each credential in parallel
+        for credential in credential_list:
+            if not remaining_recipients:
+                engine.logger.info("All recipients processed, stopping.")
+                break
+            with lock:  # Thread-safe batch creation
+                recipient_batch = [r for r in remaining_recipients if f"{credential.username}:{r}" not in successful_credentials][:20]
+                if not recipient_batch:
+                    engine.logger.info("No unsent recipients for %s, skipping.", credential.username)
+                    continue
+                # Remove batch recipients from remaining_recipients
+                remaining_recipients.difference_update(recipient_batch)
+            engine.logger.info("Processing batch %d for %s:%d from %s with %d recipients", batch_number, host, port, credential.username, len(recipient_batch))
+            thread = threading.Thread(
+                target=send_mail_batch,
+                args=(host, port, recipient_batch, credential, subject, content, content_type, total_sent, total_failed),
+                name=f"Batch-{batch_number}-{credential.username}"
+            )
+            thread.start()
+            threads.append(thread)
+            batch_number += 1
+
+    for thread in threads:
+        thread.join()
+        engine.logger.debug("Thread joined: %s", thread.name)
+    
+    engine.logger.info("Email sending complete. Total sent: %d, Total failed: %d", total_sent[0], total_failed[0])
+    messagebox.showinfo("Sending complete", f"Email processed successfully. Sent: {total_sent[0]}, Failed: {total_failed[0]}")
+    return total_sent[0], total_failed[0]  # Return counts
 
 def valid_email(email):
     pattern = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
     return re.match(pattern, email) is not None
-
-
-def get_sender_address():
-    while True:
-        email = input("Enter Sender Address: ")
-        if valid_email(email):
-            return email
-
-def get_subject():
-    while True:
-        subject = input("Enter email subject: ")
-        if subject is not None:
-            return subject
-
-if __name__ == "__main__":
-    if not check_system_time():
-        sys.exit(1)
-    else:
-        show_intro()
-        print("Please upload you email list")
-        time.sleep(1)
-        email_file_path = select_emails_file()
-        print("Loading emails...")
-        time.sleep(1)
-        print("Please upload message file")
-        message_file_path = select_message_file()
-    
-        if email_file_path and message_file_path:
-            sender_address = get_sender_address()
-            if sender_address:
-                email_subject = get_subject()
-
-                if email_subject:
-                    detonate(email_file_path, message_file_path, sender_address, email_subject)
-        else:
-            print("No files selected.")
-            messagebox.showerror("No File Selected", "You must select a file to proceed.")
-            sys.exit(1)

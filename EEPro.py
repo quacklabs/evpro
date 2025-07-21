@@ -59,10 +59,11 @@ class Engine:
 				"Content-type" : "application/json",
 				"Accept" : "application/json"
 			}
-			api_url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&country=us&protocol=http,socks4&proxy_format=ipport&format=json&timeout=10000"
+			# api_url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&country=us&protocol=http,socks4&proxy_format=ipport&format=json&timeout=10000"
+			api_url = "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/all/data.json"
 			response = requests.get(api_url, headers)
 			response.raise_for_status()
-			proxies = response.json()['proxies']
+			proxies = response.json()
 				
 			return [Proxy(proxy['ip'], proxy['port'], proxy['protocol']) for proxy in proxies]
 		except Exception as e:

