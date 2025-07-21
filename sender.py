@@ -4,9 +4,8 @@ import time
 import random
 import re
 import pyfiglet
-from tkinter import Tk, messagebox, filedialog
-from collections import defaultdict
-from disposable_email_domains import blocklist
+from tkinter import Tk, messagebox, filedialog, simpledialog
+from collections import defaultdict, deque
 import itertools
 import dns.resolver
 import smtplib
@@ -52,6 +51,33 @@ class Credentials:
         self.password = password
         self.domain = domain
 
+class RateLimiter:
+    def __init__(self, limit_per_hour=30):
+        self.limit_per_hour = limit_per_hour
+        self.sent_times = defaultdict(deque)  # Track send times per (host, port)
+        self.lock = threading.Lock()
+
+    def can_send(self, host, port):
+        with self.lock:
+            current_time = time.time()
+            key = (host, port)
+            # Remove timestamps older than 1 hour
+            while self.sent_times[key] and current_time - self.sent_times[key][0] > 3600:
+                self.sent_times[key].popleft()
+            if len(self.sent_times[key]) < self.limit_per_hour:
+                self.sent_times[key].append(current_time)
+                return True
+            return False
+
+    def time_until_next_slot(self, host, port):
+        with self.lock:
+            key = (host, port)
+            if len(self.sent_times[key]) < self.limit_per_hour:
+                return 0
+            oldest_time = self.sent_times[key][0]
+            current_time = time.time()
+            return 3600 - (current_time - oldest_time)
+
 class Engine:
     def __init__(self):
         self.logger = logging.getLogger('EmailSenderPro')
@@ -60,6 +86,7 @@ class Engine:
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
         self.logger.setLevel(logging.DEBUG)
+        self.rate_limiter = RateLimiter(limit_per_hour=30)
 
     def read_file(self, file_path):
         try:
@@ -265,13 +292,19 @@ def save_failed_email(email, save_dir=None):
     with open(file_path, 'a') as file:
         file.write(email + '\n')
 
-def send_mail_batch(mx_server, port, batch, credential, subject, content, content_type, total_sent, total_failed):
+def send_mail_batch(mx_server, port, batch, credential, subject, content, content_type, sender_name, total_sent, total_failed):
     for recipient in batch:
         with lock:  # Thread-safe check
             credential_key = f"{credential.username}:{recipient}"
             if credential_key in successful_credentials:
                 engine.logger.info("Skipping already sent email from %s to %s", credential.username, recipient)
                 continue
+
+        # Check rate limit
+        while not engine.rate_limiter.can_send(mx_server, port):
+            wait_time = engine.rate_limiter.time_until_next_slot(mx_server, port)
+            engine.logger.info("Rate limit reached for %s:%d, waiting %.2f seconds", mx_server, port, wait_time)
+            time.sleep(wait_time)
 
         spinner = Spinner(f"Sending email from {credential.username} to {recipient}...")
         spinner.start()
@@ -297,7 +330,7 @@ def send_mail_batch(mx_server, port, batch, credential, subject, content, conten
             engine.logger.info("Successfully logged in for %s", credential.username)
             
             msg = MIMEMultipart()
-            msg['From'] = f'"Accounting " <{credential.username}>'
+            msg['From'] = formataddr((sender_name, credential.username))  # Use provided sender_name
             msg['To'] = recipient
             msg['Subject'] = subject.replace('[[-Email-]]', recipient)
             personalized_content = personalize_content(content, recipient)
@@ -329,7 +362,46 @@ def send_mail_batch(mx_server, port, batch, credential, subject, content, conten
         finally:
             spinner.stop()
 
+def distribute_recipients(recipients, grouped_credentials):
+    """Distribute recipients evenly across credentials for load balancing."""
+    assignments = []
+    recipient_count = len(recipients)
+    total_credentials = sum(len(creds) for creds in grouped_credentials.values())
+    
+    if total_credentials == 0:
+        return assignments
+
+    # Calculate recipients per credential
+    recipients_per_credential = max(1, recipient_count // total_credentials)
+    
+    recipient_iter = iter(recipients)
+    for (host, port), credentials in grouped_credentials.items():
+        for credential in credentials:
+            # Assign up to recipients_per_credential recipients to this credential
+            batch = list(itertools.islice(recipient_iter, recipients_per_credential))
+            if batch:
+                assignments.append(((host, port), credential, batch))
+    # Assign any remaining recipients to a random credential
+    remaining = list(recipient_iter)
+    if remaining:
+        (host, port), credentials = random.choice(list(grouped_credentials.items()))
+        credential = random.choice(credentials)
+        assignments.append(((host, port), credential, remaining))
+    
+    return assignments
+
 def detonate(email_file_path, smtp_file_path, message_file_path, subject):
+    # Prompt for sender name after subject
+    
+    root = Tk()
+    root.withdraw()
+    sender_name = simpledialog.askstring("Input", "Enter Sender Name for From header:", parent=root)
+    root.destroy()
+    if not sender_name:
+        engine.logger.error("No sender name provided. Exiting.")
+        messagebox.showerror("Error", "Sender name is required.")
+        return 0, 0
+
     recipients = load_recipients(email_file_path)
     if not recipients:
         engine.logger.error("No valid recipients loaded. Exiting.")
@@ -353,30 +425,26 @@ def detonate(email_file_path, smtp_file_path, message_file_path, subject):
     
     grouped_credentials = group_by_host(credentials)
     valid_recipients = group_by_domain(recipients)  # Returns a flat list of valid emails
-    remaining_recipients = set(valid_recipients)  # Track unsent recipients
-    batch_number = 1
     total_sent = [0]  # Use list to allow modification in threads
     total_failed = [0]  # Use list to allow modification in threads
+    batch_number = 1
 
-    # Distribute recipients across credentials
-    for (host, port), credential_list in grouped_credentials.items():
-        engine.logger.info("Processing %d credentials for %s:%d", len(credential_list), host, port)
-        # Assign batches to each credential in parallel
-        for credential in credential_list:
-            if not remaining_recipients:
-                engine.logger.info("All recipients processed, stopping.")
-                break
-            with lock:  # Thread-safe batch creation
-                recipient_batch = [r for r in remaining_recipients if f"{credential.username}:{r}" not in successful_credentials][:20]
-                if not recipient_batch:
-                    engine.logger.info("No unsent recipients for %s, skipping.", credential.username)
-                    continue
-                # Remove batch recipients from remaining_recipients
-                remaining_recipients.difference_update(recipient_batch)
-            engine.logger.info("Processing batch %d for %s:%d from %s with %d recipients", batch_number, host, port, credential.username, len(recipient_batch))
+    # Distribute recipients across credentials for load balancing
+    assignments = distribute_recipients(valid_recipients, grouped_credentials)
+    engine.logger.info("Assigned %d recipients across %d credentials", len(valid_recipients), len(assignments))
+
+    # Process each assignment
+    for (host, port), credential, recipient_batch in assignments:
+        if not recipient_batch:
+            engine.logger.info("No recipients assigned to %s, skipping.", credential.username)
+            continue
+        # Split recipients into smaller batches (e.g., 5 emails per batch)
+        for batch in chunk_list(recipient_batch, 5):
+            engine.logger.info("Processing batch %d for %s:%d from %s with %d recipients", 
+                             batch_number, host, port, credential.username, len(batch))
             thread = threading.Thread(
                 target=send_mail_batch,
-                args=(host, port, recipient_batch, credential, subject, content, content_type, total_sent, total_failed),
+                args=(host, port, batch, credential, subject, content, content_type, sender_name, total_sent, total_failed),
                 name=f"Batch-{batch_number}-{credential.username}"
             )
             thread.start()

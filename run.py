@@ -2,7 +2,7 @@ import os
 import sys
 import pyfiglet
 from checker import start_checker
-from sender import detonate  # Import detonate from sender script
+from sender import detonate, show_intro as sender_intro  # Import detonate from sender script
 from EEPro import Engine
 
 def clear_console():
@@ -27,6 +27,7 @@ def main_menu():
 
     if choice == "1":
         engine = Engine()
+        sender_intro()
         print("Please upload your recipient email list")
         email_file_path = engine.select_file([("Text Files", "*.txt")])
         print("Please upload your SMTP credentials file (format: host|port|username|password)")
