@@ -141,7 +141,7 @@ jobs:
           Invoke-Expression $pyinstallerCommand
 
       - name: Upload EXE as Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: email_toolkit_x86
           path: dist/email_toolkit_x86.exe
