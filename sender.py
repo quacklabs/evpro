@@ -298,7 +298,7 @@ def send_mail_batch(mx_server, port, batch, credential, subject, content, conten
             msg = MIMEMultipart()
             msg['From'] = credential.username
             msg['To'] = recipient
-            msg['Subject'] = subject
+            msg['Subject'] = subject.replace('[[-Email-]]', recipient)
             personalized_content = personalize_content(content, recipient)
             msg.attach(MIMEText(personalized_content, 'html' if content_type == 'HTML' else 'plain'))
             server.sendmail(credential.username, [recipient], msg.as_string())
