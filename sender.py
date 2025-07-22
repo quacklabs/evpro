@@ -42,7 +42,7 @@ class RateLimiter:
         with self.lock:
             current_time = time.time()
             key = (host, port)
-            # Remove timestamps older than 1 hour
+            # Remove timestamps older than 30 minutes
             while self.sent_times[key] and current_time - self.sent_times[key][0] > 1800:
                 self.sent_times[key].popleft()
             if len(self.sent_times[key]) < self.limit_per_hour:
@@ -57,7 +57,7 @@ class RateLimiter:
                 return 0
             oldest_time = self.sent_times[key][0]
             current_time = time.time()
-            return 3600 - (current_time - oldest_time)
+            return 1800 - (current_time - oldest_time)
 
 class Engine:
     def __init__(self):
