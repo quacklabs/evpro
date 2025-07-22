@@ -33,7 +33,7 @@ class Credentials:
         self.domain = domain
 
 class RateLimiter:
-    def __init__(self, limit_per_hour=300):
+    def __init__(self, limit_per_hour=100):
         self.limit_per_hour = limit_per_hour
         self.sent_times = defaultdict(deque)  # Track send times per (host, port)
         self.lock = threading.Lock()
@@ -43,7 +43,7 @@ class RateLimiter:
             current_time = time.time()
             key = (host, port)
             # Remove timestamps older than 1 hour
-            while self.sent_times[key] and current_time - self.sent_times[key][0] > 3600:
+            while self.sent_times[key] and current_time - self.sent_times[key][0] > 1800:
                 self.sent_times[key].popleft()
             if len(self.sent_times[key]) < self.limit_per_hour:
                 self.sent_times[key].append(current_time)
@@ -67,7 +67,7 @@ class Engine:
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
         self.logger.setLevel(logging.DEBUG)
-        self.rate_limiter = RateLimiter(limit_per_hour=30)
+        self.rate_limiter = RateLimiter(limit_per_hour=100)
 
     def read_file(self, file_path):
         try:
