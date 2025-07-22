@@ -18,30 +18,11 @@ import threading
 from datetime import datetime
 from email.utils import formataddr
 
-class Spinner:
-    def __init__(self, text):
-        self.spinner = ['-', '\\', '|', '/']
-        self.text = text
-        self.idx = 0
-        self.running = True
-        self.thread = threading.Thread(target=self.animate)
-
-    def start(self):
-        self.thread.start()
-
-    def stop(self):
-        self.running = False
-        self.thread.join()
-
-    def animate(self):
-        terminal_width = shutil.get_terminal_size().columns
-        spinner_position = terminal_width - 5
-        while self.running:
-            output = f'{self.text:<{spinner_position}}{self.spinner[self.idx]}'
-            sys.stdout.write(f'\r{output}\n')
-            sys.stdout.flush()
-            self.idx = (self.idx + 1) % len(self.spinner)
-            time.sleep(1)
+try:
+    from disposable_email_domains import blocklist
+except ImportError:
+    blocklist = set()  # Fallback to empty set if module is unavailable
+    logging.warning("disposable_email_domains module not found. Disposable domain filtering disabled.")
 
 class Credentials:
     def __init__(self, host, port, username, password, domain):
@@ -306,8 +287,7 @@ def send_mail_batch(mx_server, port, batch, credential, subject, content, conten
             engine.logger.info("Rate limit reached for %s:%d, waiting %.2f seconds", mx_server, port, wait_time)
             time.sleep(wait_time)
 
-        spinner = Spinner(f"Sending email from {credential.username} to {recipient}...")
-        spinner.start()
+        print(f"Sending email from {credential.username} to {recipient}...")
         engine.logger.info("Attempting SMTP connection for %s to %s on %s:%d", credential.username, recipient, mx_server, port)
         try:
             # Use SMTP_SSL for port 465, SMTP with STARTTLS for others
@@ -360,7 +340,7 @@ def send_mail_batch(mx_server, port, batch, credential, subject, content, conten
                 total_failed[0] += 1
                 save_failed_email(recipient)
         finally:
-            spinner.stop()
+            pass  # No spinner to stop
 
 def distribute_recipients(recipients, grouped_credentials):
     """Distribute recipients evenly across credentials for load balancing."""
@@ -392,7 +372,6 @@ def distribute_recipients(recipients, grouped_credentials):
 
 def detonate(email_file_path, smtp_file_path, message_file_path, subject):
     # Prompt for sender name after subject
-    
     root = Tk()
     root.withdraw()
     sender_name = simpledialog.askstring("Input", "Enter Sender Name for From header:", parent=root)
