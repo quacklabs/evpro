@@ -33,7 +33,7 @@ class Credentials:
         self.domain = domain
 
 class RateLimiter:
-    def __init__(self, limit_per_hour=30):
+    def __init__(self, limit_per_hour=300):
         self.limit_per_hour = limit_per_hour
         self.sent_times = defaultdict(deque)  # Track send times per (host, port)
         self.lock = threading.Lock()
