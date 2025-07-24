@@ -343,31 +343,55 @@ def send_mail_batch(mx_server, port, batch, credential, subject, content, conten
             pass  # No spinner to stop
 
 def distribute_recipients(recipients, grouped_credentials):
-    """Distribute recipients evenly across credentials for load balancing."""
+    """Distribute recipients across all SMTP servers and credentials with auto-rotation support."""
     assignments = []
     recipient_count = len(recipients)
-    total_credentials = sum(len(creds) for creds in grouped_credentials.values())
+    available_servers = [(host, port) for host, port in grouped_credentials.keys()]
     
-    if total_credentials == 0:
+    if not available_servers:
+        engine.logger.error("No SMTP servers available for distribution.")
         return assignments
 
-    # Calculate recipients per credential
-    recipients_per_credential = max(1, recipient_count // total_credentials)
-    
+    # Shuffle recipients to avoid bias
+    random.shuffle(recipients)
     recipient_iter = iter(recipients)
-    for (host, port), credentials in grouped_credentials.items():
-        for credential in credentials:
-            # Assign up to recipients_per_credential recipients to this credential
-            batch = list(itertools.islice(recipient_iter, recipients_per_credential))
-            if batch:
-                assignments.append(((host, port), credential, batch))
-    # Assign any remaining recipients to a random credential
-    remaining = list(recipient_iter)
-    if remaining:
-        (host, port), credentials = random.choice(list(grouped_credentials.items()))
-        credential = random.choice(credentials)
-        assignments.append(((host, port), credential, remaining))
     
+    # Initialize server rotation queue
+    server_queue = deque(available_servers)
+    
+    while recipient_iter:
+        try:
+            # Get next available server
+            host, port = server_queue[0]
+            credentials = grouped_credentials[(host, port)]
+            if not credentials:
+                server_queue.popleft()
+                continue
+            
+            # Check if the server can send
+            if engine.rate_limiter.can_send(host, port):
+                credential = random.choice(credentials)  # Randomly select a credential for this server
+                # Assign a batch of recipients (e.g., up to 5)
+                batch = list(itertools.islice(recipient_iter, 5))
+                if batch:
+                    assignments.append(((host, port), credential, batch))
+                    engine.logger.debug("Assigned batch of %d recipients to %s:%d (%s)", 
+                                      len(batch), host, port, credential.username)
+            else:
+                # Server is rate-limited, rotate to next server
+                wait_time = engine.rate_limiter.time_until_next_slot(host, port)
+                engine.logger.info("Server %s:%d is rate-limited, waiting %.2f seconds. Rotating.", 
+                                  host, port, wait_time)
+                server_queue.rotate(1)  # Move current server to end of queue
+                continue
+            
+            # Rotate server to balance load
+            server_queue.rotate(1)
+            
+        except StopIteration:
+            break
+
+    engine.logger.info("Distributed %d recipients across %d assignments.", recipient_count, len(assignments))
     return assignments
 
 def detonate(email_file_path, smtp_file_path, message_file_path, subject):
@@ -417,18 +441,34 @@ def detonate(email_file_path, smtp_file_path, message_file_path, subject):
         if not recipient_batch:
             engine.logger.info("No recipients assigned to %s, skipping.", credential.username)
             continue
-        # Split recipients into smaller batches (e.g., 5 emails per batch)
-        for batch in chunk_list(recipient_batch, 5):
-            engine.logger.info("Processing batch %d for %s:%d from %s with %d recipients", 
-                             batch_number, host, port, credential.username, len(batch))
-            thread = threading.Thread(
-                target=send_mail_batch,
-                args=(host, port, batch, credential, subject, content, content_type, sender_name, total_sent, total_failed),
-                name=f"Batch-{batch_number}-{credential.username}"
-            )
-            thread.start()
-            threads.append(thread)
-            batch_number += 1
+        # Process batch directly (already chunked in distribute_recipients)
+        engine.logger.info("Processing batch %d for %s:%d from %s with %d recipients", 
+                         batch_number, host, port, credential.username, len(recipient_batch))
+        thread = threading.Thread(
+            target=send_mail_batch,
+            args=(host, port, recipient_batch, credential, subject, content, content_type, sender_name, total_sent, total_failed),
+            name=f"Batch-{batch_number}-{credential.username}"
+        )
+        thread.start()
+        threads.append(thread)
+        batch_number += 1
+
+        # Check for rate-limited servers and redistribute remaining recipients if needed
+        remaining_recipients = list(recipient_iter if 'recipient_iter' in locals() else [])
+        if remaining_recipients:
+            engine.logger.info("Redistributing %d remaining recipients due to rate limits.", len(remaining_recipients))
+            additional_assignments = distribute_recipients(remaining_recipients, grouped_credentials)
+            for (host, port), credential, batch in additional_assignments:
+                engine.logger.info("Processing additional batch %d for %s:%d from %s with %d recipients", 
+                                 batch_number, host, port, credential.username, len(batch))
+                thread = threading.Thread(
+                    target=send_mail_batch,
+                    args=(host, port, batch, credential, subject, content, content_type, sender_name, total_sent, total_failed),
+                    name=f"Batch-{batch_number}-{credential.username}"
+                )
+                thread.start()
+                threads.append(thread)
+                batch_number += 1
 
     for thread in threads:
         thread.join()
