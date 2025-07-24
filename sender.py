@@ -12,7 +12,6 @@ import smtplib
 import socket
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import shutil
 import logging
 import threading
 from datetime import datetime
@@ -21,7 +20,7 @@ from email.utils import formataddr
 try:
     from disposable_email_domains import blocklist
 except ImportError:
-    blocklist = set()  # Fallback to empty set if module is unavailable
+    blocklist = set()
     logging.warning("disposable_email_domains module not found. Disposable domain filtering disabled.")
 
 class Credentials:
@@ -33,31 +32,62 @@ class Credentials:
         self.domain = domain
 
 class RateLimiter:
-    def __init__(self, limit_per_hour=47):
-        self.limit_per_hour = limit_per_hour
-        self.sent_times = defaultdict(deque)  # Track send times per (host, port)
+    def __init__(self, default_limit_per_hour=43):
+        self.default_limit_per_hour = default_limit_per_hour
+        self.sent_times = defaultdict(deque)
+        self.limits = {}
         self.lock = threading.Lock()
+        self.logger = logging.getLogger('EmailSenderPro')
+
+    def set_limit(self, host, port, limit):
+        with self.lock:
+            self.limits[(host, port)] = limit
+            self.logger.info("Set rate limit for %s:%d to %d emails per hour", host, port, limit)
+
+    def reset(self):
+        with self.lock:
+            self.sent_times.clear()
+            self.logger.info("Rate limiter reset. All sent_times cleared.")
 
     def can_send(self, host, port):
         with self.lock:
             current_time = time.time()
             key = (host, port)
-            # Remove timestamps older than 30 minutes
+            limit = self.limits.get(key, self.default_limit_per_hour)
             while self.sent_times[key] and current_time - self.sent_times[key][0] > 3600:
                 self.sent_times[key].popleft()
-            if len(self.sent_times[key]) < self.limit_per_hour:
-                self.sent_times[key].append(current_time)
-                return True
-            return False
+            current_count = len(self.sent_times[key])
+            self.logger.debug("Rate limiter check for %s:%d: %d/%d emails sent in last hour", 
+                             host, port, current_count, limit)
+            if current_count >= limit:
+                self.logger.warning("Rate limit reached for %s:%d, %d emails sent", 
+                                   host, port, current_count)
+                return False
+            self.logger.debug("Allowing send for %s:%d, current count: %d", 
+                             host, port, current_count)
+            return True
+
+    def record_send(self, host, port):
+        with self.lock:
+            key = (host, port)
+            self.sent_times[key].append(time.time())
+            self.logger.debug("Recorded send for %s:%d, new count: %d", 
+                             host, port, len(self.sent_times[key]))
 
     def time_until_next_slot(self, host, port):
         with self.lock:
             key = (host, port)
-            if len(self.sent_times[key]) < self.limit_per_hour:
+            limit = self.limits.get(key, self.default_limit_per_hour)
+            current_count = len(self.sent_times[key])
+            if current_count < limit:
+                self.logger.debug("No wait needed for %s:%d, %d/%d emails sent", 
+                                 host, port, current_count, limit)
                 return 0
             oldest_time = self.sent_times[key][0]
             current_time = time.time()
-            return 3600 - (current_time - oldest_time)
+            wait_time = 3600 - (current_time - oldest_time)
+            self.logger.info("Waiting %.2f seconds for next slot for %s:%d", wait_time, host, port)
+            return wait_time
 
 class Engine:
     def __init__(self):
@@ -67,7 +97,13 @@ class Engine:
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
         self.logger.setLevel(logging.DEBUG)
-        self.rate_limiter = RateLimiter(limit_per_hour=43)
+        self.rate_limiter = RateLimiter(default_limit_per_hour=43)
+        self.rate_limiter.reset()
+        self.resolver = dns.resolver.Resolver()
+        self.resolver.timeout = 15.0
+        self.resolver.lifetime = 15.0
+        self.resolver.nameservers = ['8.8.8.8', '1.1.1.1', '8.8.4.4']
+        self.semaphores = defaultdict(lambda: threading.Semaphore(1))
 
     def read_file(self, file_path):
         try:
@@ -89,19 +125,22 @@ class Engine:
         try:
             if domain == 'outlook.com':
                 return 'smtp-mail.outlook.com'
+            elif domain == 'gmail.com':
+                return 'smtp.gmail.com'
             else:
-                mx_records = dns.resolver.resolve(domain, 'MX')
+                mx_records = self.resolver.resolve(domain, 'MX')
                 mx_record = sorted(mx_records, key=lambda r: r.preference)[0]
-                return str(mx_record.exchange).rstrip('.')
+                mx_server = str(mx_record.exchange).rstrip('.')
+                self.logger.debug("Resolved MX for %s: %s", domain, mx_server)
+                return mx_server
         except Exception as e:
-            return domain
-            # self.logger.error("Failed to resolve MX for %s: %s", domain, str(e))
-            # return None
+            self.logger.error("Failed to resolve MX for %s: %s. Using fallback.", domain, str(e))
+            return None
 
 engine = Engine()
-successful_credentials = set()  # Track sent emails to avoid duplicates
-threads = []  # Track active threads
-lock = threading.Lock()  # Lock for thread-safe updates
+successful_credentials = set()
+threads = []
+lock = threading.Lock()
 
 def show_error_dialog(message):
     root = Tk()
@@ -180,20 +219,22 @@ def load_credentials(file_path):
     for line in smtps:
         parts = line.strip().split('|')
         if len(parts) == 4:
+            smtp_host = parts[0].strip() if parts[0].strip() else None
+            try:
+                port = int(parts[1].strip())
+            except ValueError:
+                engine.logger.warning("Invalid port format: %s, skipping line", parts[1])
+                continue
             username = parts[2].strip()
             if '@' not in username:
                 engine.logger.warning("Invalid username format: %s", username)
                 continue
-            try:
-                port = int(parts[1].strip())  # Parse port from file
-            except ValueError:
-                engine.logger.warning("Invalid port format: %s, skipping %s", parts[1], username)
-                continue
-            password = parts[3]
+            password = parts[3].strip()
             domain = username.split('@')[1].strip().lower()
-            details = Credentials(None, port, username, password, domain)
+            details = Credentials(smtp_host, port, username, password, domain)
             credentials.append(details)
-            engine.logger.debug("Loaded credential: %s for domain %s, port %d", username, domain, port)
+            engine.logger.debug("Loaded credential: %s for domain %s, port %d, smtp_host %s", 
+                              username, domain, port, smtp_host if smtp_host else "None")
         else:
             engine.logger.warning("Invalid credential format: %s", line.strip())
     engine.logger.info("Loaded %d SMTP credentials.", len(credentials))
@@ -214,24 +255,31 @@ def group_by_host(credentials):
         if re.match(r"[^@]+@[^@]+\.[^@]+", credential.username) and engine.filter_spam(credential.username.split('@')[0].strip()):
             domain = credential.username.split('@')[1].strip().lower()
             if not engine.is_banned_tld(domain) and domain not in blocklist:
-                if domain in domain_cache:
-                    mx_server = domain_cache[domain]
+                if credential.host:
+                    mx_server = credential.host
+                    engine.logger.debug("Using provided SMTP host %s for %s", mx_server, credential.username)
                 else:
-                    mx_server = engine.get_mx_servers(domain)
-                    domain_cache[domain] = mx_server
-                    engine.logger.debug("MX lookup for %s: %s", domain, mx_server if mx_server else "None")
+                    if domain in domain_cache:
+                        mx_server = domain_cache[domain]
+                    else:
+                        mx_server = engine.get_mx_servers(domain)
+                        domain_cache[domain] = mx_server
+                        engine.logger.debug("MX lookup for %s: %s", domain, mx_server if mx_server else "None")
                 if mx_server:
                     credential.host = mx_server
-                    key = (mx_server, credential.port)
+                    key = (mx_server, credential.port)  # Fixed: Use credential.port
                     grouped[key].append(credential)
-                    engine.logger.debug("Grouped credential %s under %s:%d", credential.username, mx_server, credential.port)
+                    engine.logger.debug("Grouped credential %s under sender SMTP %s:%d", 
+                                      credential.username, mx_server, credential.port)
                 else:
-                    engine.logger.warning("No MX server found for domain: %s, skipping %s", domain, credential.username)
+                    engine.logger.warning("No SMTP server found for domain %s, skipping %s", 
+                                        domain, credential.username)
             else:
-                engine.logger.warning("Skipping credential %s due to banned TLD or disposable domain: %s", credential.username, domain)
+                engine.logger.warning("Skipping credential %s due to banned TLD or disposable domain: %s", 
+                                    credential.username, domain)
         else:
             engine.logger.warning("Skipping invalid or spam credential: %s", credential.username)
-    engine.logger.info("%d servers found for processing.", len(grouped))
+    engine.logger.info("Grouped %d credentials into %d sender SMTP servers.", len(credentials), len(grouped))
     return grouped
 
 def group_by_domain(emails):
@@ -247,8 +295,8 @@ def group_by_domain(emails):
                 engine.logger.warning("Skipping email %s due to banned TLD or disposable domain: %s", email, domain)
         else:
             engine.logger.warning("Skipping invalid or spam email: %s", email)
-    engine.logger.info("%d domains found for recipients, %d valid emails.", len(grouped_emails), len(valid_emails))
-    return valid_emails  # Return flat list of valid emails
+    engine.logger.info("%d recipient domains found, %d valid emails.", len(grouped_emails), len(valid_emails))
+    return valid_emails
 
 def chunk_list(items, batch_size):
     it = iter(items)
@@ -257,7 +305,7 @@ def chunk_list(items, batch_size):
 
 def personalize_content(content, recipient):
     content = content.replace('[[-Email-]]', recipient)
-    content = content.replace('[[-Now-]]', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    content = content.replace('[[-Now-]]', datetime.now().strftime('%Y-%m-d %H:%M:%S'))
     return content
 
 def save_valid_email(email, save_dir=None):
@@ -275,210 +323,285 @@ def save_failed_email(email, save_dir=None):
         file.write(email + '\n')
 
 def send_mail_batch(mx_server, port, batch, credential, subject, content, content_type, sender_name, total_sent, total_failed):
-    for recipient in batch:
-        with lock:  # Thread-safe check
-            credential_key = f"{credential.username}:{recipient}"
-            if credential_key in successful_credentials:
-                engine.logger.info("Skipping already sent email from %s to %s", credential.username, recipient)
-                continue
+    with engine.semaphores[(mx_server, port)]:
+        for recipient in batch:
+            with lock:
+                credential_key = f"{credential.username}:{recipient}"
+                if credential_key in successful_credentials:
+                    engine.logger.info("Skipping already sent email from %s to %s", credential.username, recipient)
+                    continue
 
-        # Check rate limit
-        while not engine.rate_limiter.can_send(mx_server, port):
-            wait_time = engine.rate_limiter.time_until_next_slot(mx_server, port)
-            engine.logger.info("Rate limit reached for %s:%d, waiting %.2f seconds", mx_server, port, wait_time)
-            time.sleep(wait_time)
+            key = (mx_server, port)
+            limit = engine.rate_limiter.limits.get(key, engine.rate_limiter.default_limit_per_hour)
+            current_count = len(engine.rate_limiter.sent_times[key])
+            engine.logger.debug("Pre-send check for %s:%d: %d/%d emails in queue", 
+                              mx_server, port, current_count, limit)
 
-        print(f"Sending email from {credential.username} to {recipient}...")
-        engine.logger.info("Attempting SMTP connection for %s to %s on %s:%d", credential.username, recipient, mx_server, port)
-        try:
-            # Use SMTP_SSL for port 465, SMTP with STARTTLS for others
-            if port == 465:
-                server = smtplib.SMTP_SSL(mx_server, port, timeout=10)
-                engine.logger.debug("Connected to SMTP server %s:%d for %s using SSL", mx_server, port, credential.username)
-                server.ehlo(f"{credential.domain}")
-                engine.logger.debug("EHLO sent for %s", credential.domain)
-            else:
-                server = smtplib.SMTP(mx_server, port, timeout=10)
-                engine.logger.debug("Connected to SMTP server %s:%d for %s", mx_server, port, credential.username)
-                server.ehlo(f"{credential.domain}")
-                engine.logger.debug("EHLO sent for %s", credential.domain)
-                server.starttls()
-                engine.logger.debug("STARTTLS initiated for %s", credential.username)
-                server.ehlo(f"{credential.domain}")
-                engine.logger.debug("Second EHLO sent for %s", credential.domain)
-            
-            server.login(credential.username, credential.password)
-            engine.logger.info("Successfully logged in for %s", credential.username)
-            
-            msg = MIMEMultipart()
-            msg['From'] = formataddr((sender_name, credential.username))  # Use provided sender_name
-            msg['To'] = recipient
-            msg['Subject'] = subject.replace('[[-Email-]]', recipient)
-            personalized_content = personalize_content(content, recipient)
-            msg.attach(MIMEText(personalized_content, 'html' if content_type == 'HTML' else 'plain'))
-            server.sendmail(credential.username, [recipient], msg.as_string())
-            engine.logger.info("Email sent successfully from %s to %s", credential.username, recipient)
-            with lock:  # Thread-safe update
-                total_sent[0] += 1
-                save_valid_email(recipient)
-                successful_credentials.add(credential_key)
-                # Add delay after every 100 emails
-                if total_sent[0] % 100 == 0:
-                    delay_minutes = random.uniform(1, 5)
-                    engine.logger.info("Pausing for %.2f minutes after %d emails", delay_minutes, total_sent[0])
-                    time.sleep(delay_minutes * 60)
-            server.noop()
-            engine.logger.debug("NOOP sent to keep connection alive for %s", credential.username)
-            server.quit()
-        except (smtplib.SMTPException, socket.error) as e:
-            engine.logger.error("SMTP send failed for %s to %s: %s", credential.username, recipient, str(e))
-            with lock:  # Thread-safe update
-                total_failed[0] += 1
-                save_failed_email(recipient)
-        except Exception as e:
-            engine.logger.error("Unexpected error for %s to %s: %s", credential.username, recipient, str(e))
-            with lock:  # Thread-safe update
-                total_failed[0] += 1
-                save_failed_email(recipient)
-        finally:
-            pass  # No spinner to stop
+            while not engine.rate_limiter.can_send(mx_server, port):
+                wait_time = engine.rate_limiter.time_until_next_slot(mx_server, port)
+                engine.logger.info("Rate limit reached for sender SMTP %s:%d, waiting %.2f seconds", mx_server, port, wait_time)
+                time.sleep(wait_time)
+
+            engine.logger.info("Attempting to send email from %s to %s via SMTP %s:%d", 
+                              credential.username, recipient, mx_server, port)
+            try:
+                if port == 465:
+                    server = smtplib.SMTP_SSL(mx_server, port, timeout=10)
+                    engine.logger.debug("Connected to sender SMTP %s:%d for %s using SSL", 
+                                      mx_server, port, credential.username)
+                    server.ehlo(f"{credential.domain}")
+                    engine.logger.debug("EHLO sent for %s", credential.domain)
+                else:
+                    server = smtplib.SMTP(mx_server, port, timeout=10)
+                    engine.logger.debug("Connected to sender SMTP %s:%d for %s", 
+                                      mx_server, port, credential.username)
+                    server.ehlo(f"{credential.domain}")
+                    engine.logger.debug("EHLO sent for %s", credential.domain)
+                    server.starttls()
+                    engine.logger.debug("STARTTLS initiated for %s", credential.username)
+                    server.ehlo(f"{credential.domain}")
+                    engine.logger.debug("Second EHLO sent for %s", credential.domain)
+                
+                server.login(credential.username, credential.password)
+                engine.logger.info("Successfully logged in for %s", credential.username)
+                
+                msg = MIMEMultipart()
+                msg['From'] = formataddr((sender_name, credential.username))
+                msg['To'] = recipient
+                msg['Subject'] = subject.replace('[[-Email-]]', recipient)
+                personalized_content = personalize_content(content, recipient)
+                msg.attach(MIMEText(personalized_content, 'html' if content_type == 'HTML' else 'plain'))
+                server.sendmail(credential.username, [recipient], msg.as_string())
+                engine.logger.info("Email sent successfully from %s to %s via %s:%d", 
+                                  credential.username, recipient, mx_server, port)
+                engine.rate_limiter.record_send(mx_server, port)
+                with lock:
+                    total_sent[0] += 1
+                    save_valid_email(recipient)
+                    successful_credentials.add(credential_key)
+                server.noop()
+                engine.logger.debug("NOOP sent to keep connection alive for %s", credential.username)
+                server.quit()
+            except smtplib.SMTPAuthenticationError as e:
+                engine.logger.error("Authentication failed for %s on %s:%d: %s", 
+                                   credential.username, mx_server, port, str(e))
+                with lock:
+                    total_failed[0] += 1
+                    save_failed_email(recipient)
+            except smtplib.SMTPConnectError as e:
+                engine.logger.error("Connection failed to %s:%d for %s: %s", 
+                                   mx_server, port, credential.username, str(e))
+                with lock:
+                    total_failed[0] += 1
+                    save_failed_email(recipient)
+            except socket.timeout as e:
+                engine.logger.error("Timeout connecting to %s:%d for %s: %s", 
+                                   mx_server, port, credential.username, str(e))
+                with lock:
+                    total_failed[0] += 1
+                    save_failed_email(recipient)
+            except Exception as e:
+                engine.logger.error("Unexpected error for %s to %s: %s", 
+                                   credential.username, recipient, str(e))
+                with lock:
+                    total_failed[0] += 1
+                    save_failed_email(recipient)
 
 def distribute_recipients(recipients, grouped_credentials):
-    """Distribute recipients across all SMTP servers and credentials with auto-rotation support."""
     assignments = []
     recipient_count = len(recipients)
     available_servers = [(host, port) for host, port in grouped_credentials.keys()]
     
     if not available_servers:
-        engine.logger.error("No SMTP servers available for distribution.")
+        engine.logger.error("No sender SMTP servers available for distribution.")
         return assignments
 
-    # Shuffle recipients to avoid bias
+    batch_size = 1 if recipient_count <= 10 else 5
     random.shuffle(recipients)
     recipient_iter = iter(recipients)
-    
-    # Initialize server rotation queue
     server_queue = deque(available_servers)
-    
+    iteration_count = 0
+
+    engine.logger.debug("Starting distribution for %d recipients across %d SMTP servers", 
+                       recipient_count, len(available_servers))
+
     while recipient_iter:
+        iteration_count += 1
+        if iteration_count > recipient_count * 2:
+            engine.logger.error("Distribution loop exceeded max iterations. Possible infinite loop.")
+            break
+
         try:
-            # Get next available server
             host, port = server_queue[0]
             credentials = grouped_credentials[(host, port)]
             if not credentials:
+                engine.logger.warning("No credentials for sender SMTP %s:%d, rotating.", host, port)
                 server_queue.popleft()
+                if not server_queue:
+                    engine.logger.error("No more SMTP servers available. Stopping distribution.")
+                    break
                 continue
             
-            # Check if the server can send
+            limit = engine.rate_limiter.limits.get((host, port), engine.rate_limiter.default_limit_per_hour)
+            current_count = len(engine.rate_limiter.sent_times[(host, port)])
+            engine.logger.debug("Distribute check for %s:%d: %d/%d emails in queue", 
+                              host, port, current_count, limit)
+            
             if engine.rate_limiter.can_send(host, port):
-                credential = random.choice(credentials)  # Randomly select a credential for this server
-                # Assign a batch of recipients (e.g., up to 5)
-                batch = list(itertools.islice(recipient_iter, 5))
+                credential = random.choice(credentials)
+                batch = list(itertools.islice(recipient_iter, batch_size))
                 if batch:
                     assignments.append(((host, port), credential, batch))
-                    engine.logger.debug("Assigned batch of %d recipients to %s:%d (%s)", 
+                    engine.logger.info("Assigned batch of %d recipients to sender SMTP %s:%d (%s)", 
                                       len(batch), host, port, credential.username)
+                else:
+                    engine.logger.debug("No more recipients to assign for %s:%d", host, port)
+                    break
             else:
-                # Server is rate-limited, rotate to next server
                 wait_time = engine.rate_limiter.time_until_next_slot(host, port)
-                engine.logger.info("Server %s:%d is rate-limited, waiting %.2f seconds. Rotating.", 
+                engine.logger.info("Sender SMTP %s:%d is rate-limited, waiting %.2f seconds. Rotating.", 
                                   host, port, wait_time)
-                server_queue.rotate(1)  # Move current server to end of queue
+                server_queue.rotate(1)
                 continue
             
-            # Rotate server to balance load
             server_queue.rotate(1)
             
         except StopIteration:
+            engine.logger.debug("Recipient iterator exhausted. Ending distribution.")
+            break
+        except Exception as e:
+            engine.logger.error("Error in distribution loop: %s", str(e))
             break
 
-    engine.logger.info("Distributed %d recipients across %d assignments.", recipient_count, len(assignments))
+    engine.logger.info("Distributed %d recipients across %d assignments using sender SMTP servers.", 
+                      recipient_count, len(assignments))
     return assignments
 
 def detonate(email_file_path, smtp_file_path, message_file_path, subject):
-    # Prompt for sender name after subject
+    engine.rate_limiter.reset()
+    engine.logger.info("Starting detonate with %s, %s, %s", email_file_path, smtp_file_path, message_file_path)
+    
     root = Tk()
     root.withdraw()
     sender_name = simpledialog.askstring("Input", "Enter Sender Name for From header:", parent=root)
     root.destroy()
     if not sender_name:
         engine.logger.error("No sender name provided. Exiting.")
-        messagebox.showerror("Error", "Sender name is required.")
+        show_error_dialog("Sender name is required.")
         return 0, 0
 
     recipients = load_recipients(email_file_path)
     if not recipients:
         engine.logger.error("No valid recipients loaded. Exiting.")
-        messagebox.showerror("Error", "No valid recipients loaded.")
+        show_error_dialog("No valid recipients loaded.")
         return 0, 0
     
     credentials = load_credentials(smtp_file_path)
     if not credentials:
         engine.logger.error("No valid SMTP credentials loaded. Exiting.")
-        messagebox.showerror("Error", "No valid SMTP credentials loaded.")
+        show_error_dialog("No valid SMTP credentials loaded.")
         return 0, 0
     
     content_type = detect_content(message_file_path)
     if not content_type:
         engine.logger.error("Invalid message content. Exiting.")
-        messagebox.showerror("Error", "Invalid message content.")
+        show_error_dialog("Invalid message content.")
         return 0, 0
     
     with open(message_file_path, 'r', encoding='utf-8') as f:
         content = f.read()
     
     grouped_credentials = group_by_host(credentials)
-    valid_recipients = group_by_domain(recipients)  # Returns a flat list of valid emails
-    total_sent = [0]  # Use list to allow modification in threads
-    total_failed = [0]  # Use list to allow modification in threads
+    if not grouped_credentials:
+        engine.logger.error("No valid SMTP servers after grouping. Exiting.")
+        show_error_dialog("No valid SMTP servers available. Check credentials.")
+        return 0, 0
+
+    valid_recipients = group_by_domain(recipients)
+    if not valid_recipients:
+        engine.logger.error("No valid recipients after filtering. Exiting.")
+        show_error_dialog("No valid recipients after filtering.")
+        return 0, 0
+
+    total_sent = [0]
+    total_failed = [0]
     batch_number = 1
 
-    # Distribute recipients across credentials for load balancing
-    assignments = distribute_recipients(valid_recipients, grouped_credentials)
-    engine.logger.info("Assigned %d recipients across %d credentials", len(valid_recipients), len(assignments))
+    try:
+        assignments = distribute_recipients(valid_recipients, grouped_credentials)
+        engine.logger.info("Assigned %d recipients across %d batches", len(valid_recipients), len(assignments))
 
-    # Process each assignment
-    for (host, port), credential, recipient_batch in assignments:
-        if not recipient_batch:
-            engine.logger.info("No recipients assigned to %s, skipping.", credential.username)
-            continue
-        # Process batch directly (already chunked in distribute_recipients)
-        engine.logger.info("Processing batch %d for %s:%d from %s with %d recipients", 
-                         batch_number, host, port, credential.username, len(recipient_batch))
-        thread = threading.Thread(
-            target=send_mail_batch,
-            args=(host, port, recipient_batch, credential, subject, content, content_type, sender_name, total_sent, total_failed),
-            name=f"Batch-{batch_number}-{credential.username}"
-        )
-        thread.start()
-        threads.append(thread)
-        batch_number += 1
+        if not assignments:
+            engine.logger.error("No assignments created. Check SMTP credentials and recipient list.")
+            show_error_dialog("No assignments created. Check SMTP credentials and recipient list.")
+            return 0, 0
 
-        # Check for rate-limited servers and redistribute remaining recipients if needed
-        remaining_recipients = list(recipient_iter if 'recipient_iter' in locals() else [])
+        for (host, port), credential, recipient_batch in assignments:
+            if not recipient_batch:
+                engine.logger.info("No recipients assigned to %s, skipping.", credential.username)
+                continue
+            engine.rate_limiter.reset()
+            engine.logger.info("Starting batch %d for sender SMTP %s:%d from %s with %d recipients", 
+                             batch_number, host, port, credential.username, len(recipient_batch))
+            thread = threading.Thread(
+                target=send_mail_batch,
+                args=(host, port, recipient_batch, credential, subject, content, content_type, sender_name, total_sent, total_failed),
+                name=f"Batch-{batch_number}-{credential.username}"
+            )
+            engine.logger.debug("Starting thread for batch %d: %s", batch_number, thread.name)
+            thread.start()
+            threads.append(thread)
+            batch_number += 1
+            time.sleep(0.1)
+
+        for thread in threads:
+            thread.join()
+            engine.logger.debug("Thread joined: %s", thread.name)
+
+        remaining_recipients = [r for r in valid_recipients if not any(f"{c.username}:{r}" in successful_credentials 
+                                                                      for c in sum(grouped_credentials.values(), []))]
         if remaining_recipients:
-            engine.logger.info("Redistributing %d remaining recipients due to rate limits.", len(remaining_recipients))
+            engine.logger.info("Redistributing %d remaining recipients due to rate limits or failures.", 
+                              len(remaining_recipients))
+            engine.rate_limiter.reset()
             additional_assignments = distribute_recipients(remaining_recipients, grouped_credentials)
             for (host, port), credential, batch in additional_assignments:
-                engine.logger.info("Processing additional batch %d for %s:%d from %s with %d recipients", 
-                                 batch_number, host, port, credential.username, len(batch))
+                engine.logger.info("Starting additional batch %d for sender SMTP %s:%d from %s with %d recipients", 
+                                  batch_number, host, port, credential.username, len(batch))
                 thread = threading.Thread(
                     target=send_mail_batch,
                     args=(host, port, batch, credential, subject, content, content_type, sender_name, total_sent, total_failed),
                     name=f"Batch-{batch_number}-{credential.username}"
                 )
+                engine.logger.debug("Starting thread for additional batch %d: %s", batch_number, thread.name)
                 thread.start()
                 threads.append(thread)
                 batch_number += 1
+                time.sleep(0.1)
 
-    for thread in threads:
-        thread.join()
-        engine.logger.debug("Thread joined: %s", thread.name)
+        for thread in threads:
+            if thread.is_alive():
+                thread.join()
+                engine.logger.debug("Additional thread joined: %s", thread.name)
     
+    except Exception as e:
+        engine.logger.error("Error in detonate: %s", str(e))
+        show_error_dialog(f"Error in email sending process: {str(e)}")
+        return 0, 0
+
     engine.logger.info("Email sending complete. Total sent: %d, Total failed: %d", total_sent[0], total_failed[0])
     messagebox.showinfo("Sending complete", f"Email processed successfully. Sent: {total_sent[0]}, Failed: {total_failed[0]}")
-    return total_sent[0], total_failed[0]  # Return counts
+    return total_sent[0], total_failed[0]
 
 def valid_email(email):
     pattern = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
     return re.match(pattern, email) is not None
+
+if __name__ == "__main__":
+    show_intro()
+    email_file = select_emails_file()
+    smtp_file = select_smtp_file()
+    message_file = select_message_file()
+    subject = simpledialog.askstring("Input", "Enter Email Subject:", parent=Tk())
+    if email_file and smtp_file and message_file and subject:
+        detonate(email_file, smtp_file, message_file, subject)
