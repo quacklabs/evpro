@@ -196,7 +196,8 @@ class Engine:
 				mx_record = sorted(mx_records, key=lambda r: r.preference)[0]
 				return str(mx_record.exchange).rstrip('.')
 		except Exception as e:
-			return None
+			return domain
+			# return None
 
 	def connect_ssl(self, mx_server, proxy):
 

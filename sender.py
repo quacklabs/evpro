@@ -94,8 +94,9 @@ class Engine:
                 mx_record = sorted(mx_records, key=lambda r: r.preference)[0]
                 return str(mx_record.exchange).rstrip('.')
         except Exception as e:
-            self.logger.error("Failed to resolve MX for %s: %s", domain, str(e))
-            return None
+            return domain
+            # self.logger.error("Failed to resolve MX for %s: %s", domain, str(e))
+            # return None
 
 engine = Engine()
 successful_credentials = set()  # Track sent emails to avoid duplicates
