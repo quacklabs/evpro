@@ -370,7 +370,7 @@ def send_mail_batch(mx_server, port, batch, credential, subject, content, conten
                 msg['To'] = recipient
                 msg['Subject'] = subject.replace('[[-Email-]]', recipient)
                 personalized_content = personalize_content(content, recipient)
-                msg.attach(MIMEText(personalized_content, 'html' if content_type == 'HTML' else 'plain'))
+                msg.attach(MIMEText(personalized_content, 'html', 'utf-8'))
                 server.sendmail(credential.username, [recipient], msg.as_string())
                 engine.logger.info("Email sent successfully from %s to %s via %s:%d", 
                                   credential.username, recipient, mx_server, port)
