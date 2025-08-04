@@ -119,7 +119,7 @@ def get_mx_servers(domain):
         return _mx_cache[domain]
     try:
         if domain == 'outlook.com':
-            mx_servers = [MX_Server('smtp-mail.outlook.com', 25)]
+            mx_servers = [MX_Server('smtp-mail.outlook.com', 587)]
         else:
             # Force IPv4 for DNS resolution
             socket.socket = lambda family=socket.AF_INET, type_=socket.SOCK_STREAM, proto=0: _original_socket(family, type_, proto)
@@ -146,6 +146,7 @@ def validate_email_rcpt(email: str, mx_server: MX_Server, retries: int = 2) -> b
                     server.ehlo('localhost')
                     if mx_server.port != 465:
                         try:
+                            server.ehlo('localhost')
                             server.starttls(context=context)
                             server.ehlo('localhost')
                         except smtplib.SMTPNotSupportedError:

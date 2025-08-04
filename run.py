@@ -6,6 +6,7 @@ from sender import main as sender_main  # Import detonate from sender script
 from EEPro import Engine
 from validator import main as validator_main
 from sender_pro import main as sender_main
+from validate import main as validate_main
 
 def clear_console():
     """Clear the console based on the operating system."""
@@ -26,7 +27,8 @@ def main_menu():
     print("2. SMTP Checker")
     print("3. Email Validator")
     print("4. Email Sender (Zero SMTP config)")
-    print("5. Exit")
+    print("5. Outlook/Office365 Validator")
+    print("6. Exit")
     choice = input("Enter your choice: ")
 
     if choice == "1":
@@ -55,6 +57,10 @@ def main_menu():
         sender_main()
         main_menu()
     elif choice == "5":
+        validate_main()
+        main_menu()
+    elif choice == "6":
+
         sys.exit()
     else:
         print("Invalid choice. Please try again.")
